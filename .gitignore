@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.streamlit/
+.pytest_cache/
+data/database/*.sqlite3
+data/database/*.sqlite3-*
+data/backups/
+data/uploads/
+data/exports/

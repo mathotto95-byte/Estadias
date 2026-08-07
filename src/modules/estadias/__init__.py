@@ -1,0 +1,2 @@
+"""Módulo Estadias paralelo."""
+
