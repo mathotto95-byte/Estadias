@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -25,6 +26,7 @@ from src.modules.estadias.repository import (
     read_parametros,
     read_preferencia_colunas,
     read_rastreador,
+    read_rastreador_period,
     reabrir_conclusao,
     sample,
     save_conclusao,
@@ -232,6 +234,135 @@ def _add_minutes_to_datetime(value: object, minutes: object) -> str:
         return ""
 
 
+def _period_query_datetime(value: object) -> str:
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt):
+            return ""
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _estadia_period_specs(df: pd.DataFrame) -> list[dict[str, object]]:
+    specs: list[dict[str, object]] = []
+    if df.empty:
+        return specs
+    for _, row in df.iterrows():
+        common = {
+            "lcte_id": row.get("id") or row.get("lcte_id"),
+            "cte": row.get("cte"),
+            "nf": row.get("nf"),
+            "placa": row.get("placa_norm"),
+            "cliente": row.get("cliente"),
+            "motorista": row.get("motorista"),
+            "origem": row.get("origem"),
+            "destino": row.get("destino"),
+        }
+        for tipo, local_col, uf_col, arrival_col, departure_col, allowance_col, stay_col in [
+            ("CARGA", "origem", "uf_origem", "chegada_origem", "saida_origem", "franquia_carga_min", "estadia_carga_min"),
+            ("DESCARGA", "destino", "uf_destino", "chegada_destino", "saida_destino", "franquia_descarga_min", "estadia_descarga_min"),
+        ]:
+            stay_min = float(pd.to_numeric(pd.Series([row.get(stay_col)]), errors="coerce").fillna(0).iloc[0])
+            chegada = _period_query_datetime(row.get(arrival_col))
+            saida = _period_query_datetime(row.get(departure_col))
+            if stay_min <= 0 or not common["placa"] or not chegada or not saida:
+                continue
+            specs.append(
+                {
+                    **common,
+                    "tipo": tipo,
+                    "local": row.get(local_col),
+                    "uf": row.get(uf_col),
+                    "chegada": chegada,
+                    "inicio_estadia": _add_minutes_to_datetime(row.get(arrival_col), row.get(allowance_col)),
+                    "saida": saida,
+                    "franquia_min": row.get(allowance_col),
+                    "estadia_min": stay_min,
+                }
+            )
+    return specs
+
+
+def _tracker_positions_pdf(df: pd.DataFrame) -> bytes:
+    from html import escape
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    output = BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=landscape(A4), leftMargin=0.8 * cm, rightMargin=0.8 * cm, topMargin=0.8 * cm, bottomMargin=0.8 * cm)
+    styles = getSampleStyleSheet()
+    elements: list[object] = [
+        Paragraph("Posicoes do Rastreador por Periodo de Estadia", styles["Title"]),
+        Paragraph("Relatorio gerado a partir das viagens filtradas no painel principal.", styles["Normal"]),
+        Spacer(1, 0.3 * cm),
+    ]
+    specs = _estadia_period_specs(df)
+    safe = lambda value, default="-": escape(str(value if value not in [None, ""] else default))
+    if not specs:
+        elements.append(Paragraph("Nenhum periodo de estadia localizado para exportacao.", styles["Normal"]))
+    for idx, spec in enumerate(specs[:80], start=1):
+        if idx > 1:
+            elements.append(PageBreak())
+        header = (
+            f"{idx}. {safe(spec.get('tipo'))} | Placa {safe(spec.get('placa'))} | "
+            f"CT-e {safe(spec.get('cte'))} | NF {safe(spec.get('nf'))}"
+        )
+        elements.append(Paragraph(header, styles["Heading2"]))
+        details = (
+            f"Local: {safe(spec.get('local'))} / {safe(spec.get('uf'))}<br/>"
+            f"Origem/Destino viagem: {safe(spec.get('origem'))} &gt; {safe(spec.get('destino'))}<br/>"
+            f"Cliente: {safe(spec.get('cliente'))} | Motorista: {safe(spec.get('motorista'))}<br/>"
+            f"Chegada: {_format_export_datetime(spec.get('chegada'))} | Inicio estadia: {spec.get('inicio_estadia') or '-'} | Saida: {_format_export_datetime(spec.get('saida'))}<br/>"
+            f"Franquia: {spec.get('franquia_min') or 0} min | Tempo de estadia: {_format_minutes_value(spec.get('estadia_min'))}"
+        )
+        elements.append(Paragraph(details, styles["Normal"]))
+        elements.append(Spacer(1, 0.2 * cm))
+        positions = read_rastreador_period(str(spec.get("placa") or ""), str(spec.get("chegada") or ""), str(spec.get("saida") or ""), 5000)
+        if positions.empty:
+            elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
+            continue
+        display = positions.head(500).copy()
+        data = [["Data/Hora", "Cidade", "UF", "Latitude", "Longitude", "Vel.", "Endereco/Referencia"]]
+        for _, point in display.iterrows():
+            data.append(
+                [
+                    _format_export_datetime(point.get("data_hora")),
+                    str(point.get("cidade") or "")[:24],
+                    str(point.get("uf") or "")[:3],
+                    str(point.get("latitude") or ""),
+                    str(point.get("longitude") or ""),
+                    str(point.get("velocidade") or ""),
+                    Paragraph(escape(str(point.get("endereco") or "")[:140]), styles["BodyText"]),
+                ]
+            )
+        table = Table(data, colWidths=[3.0 * cm, 3.0 * cm, 1.0 * cm, 2.2 * cm, 2.2 * cm, 1.2 * cm, 12.5 * cm], repeatRows=1)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#020d3f")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#b7b7b7")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
+            )
+        )
+        elements.append(table)
+        if len(positions) > len(display):
+            elements.append(Paragraph(f"Exibidas 500 de {len(positions)} posicoes deste periodo para manter o PDF leve.", styles["Italic"]))
+    if len(specs) > 80:
+        elements.append(PageBreak())
+        elements.append(Paragraph(f"Relatorio limitado aos primeiros 80 periodos de estadia filtrados. Total filtrado: {len(specs)}.", styles["Normal"]))
+    doc.build(elements)
+    return output.getvalue()
+
+
 def _estadia_period_rows(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "ID viagem",
@@ -299,6 +430,12 @@ def _with_estadia_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     view = df.copy()
+    control_flag = view["encontrou_control"] if "encontrou_control" in view.columns else pd.Series(0, index=view.index)
+    tracker_flag = view["encontrou_rastreador"] if "encontrou_rastreador" in view.columns else pd.Series(0, index=view.index)
+    horas = pd.to_numeric(view["horas_estadia"] if "horas_estadia" in view.columns else pd.Series(0, index=view.index), errors="coerce").fillna(0)
+    view["Estadia"] = horas.gt(0).map(lambda value: "Estadia" if value else "Sem estadia")
+    view["Relatorio CONTROL"] = pd.to_numeric(control_flag, errors="coerce").fillna(0).astype(int).eq(1).map(lambda value: "OK" if value else "FALTANDO")
+    view["Relatorio Rastreador"] = pd.to_numeric(tracker_flag, errors="coerce").fillna(0).astype(int).eq(1).map(lambda value: "OK" if value else "FALTANDO")
     view["Tipo ponto origem"] = "ORIGEM"
     view["Local origem estadia"] = view["origem"] if "origem" in view.columns else ""
     view["Tempo na origem (min)"] = view["tempo_origem_min"] if "tempo_origem_min" in view.columns else 0
@@ -593,6 +730,9 @@ DATE_DISPLAY_COLUMNS = [
 PANEL_DEFAULT_COLUMNS = {
     "RESUMO": [
         "Status",
+        "Estadia",
+        "Relatorio CONTROL",
+        "Relatorio Rastreador",
         "Notas",
         "Placa",
         "Origem",
@@ -1394,9 +1534,14 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
             tracker_minutes = _line_tracker_minutes(row, tipo)
             control_minutes = _line_control_minutes(row, tipo)
             status_estadia, fonte_status_estadia = _status_estadia_from_minutes(tracker_minutes, control_minutes)
+            encontrou_control = _safe_int_value(row.get("encontrou_control"))
+            encontrou_rastreador = _safe_int_value(row.get("encontrou_rastreador"))
             rows.append(
                 {
                     "Status": status,
+                    "Estadia": "Estadia" if status_estadia == "ESTADIA" else ("Sem estadia" if status_estadia == "SEM ESTADIA" else "Pendente"),
+                    "Relatorio CONTROL": "OK" if encontrou_control else "FALTANDO",
+                    "Relatorio Rastreador": "OK" if encontrou_rastreador else "FALTANDO",
                     "Notas": row.get("nf") or row.get("cte") or "",
                     "Placa": row.get("placa_norm") or "",
                     "Origem": row.get("origem") or "",
@@ -1435,8 +1580,8 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "data_inicio_viagem_referencia": row.get("data_inicio_viagem_referencia") or row.get("data_hora_carga") or row.get("data_operacao") or "",
                     "data_hora_carga": row.get("data_hora_carga") or "",
                     "painel_atual": row.get("painel_atual") or "",
-                    "encontrou_control": _safe_int_value(row.get("encontrou_control")),
-                    "encontrou_rastreador": _safe_int_value(row.get("encontrou_rastreador")),
+                    "encontrou_control": encontrou_control,
+                    "encontrou_rastreador": encontrou_rastreador,
                     "concluido": _safe_int_value(row.get("concluido")),
                     "motivo_falha": row.get("motivo_falha") or "",
                 }
@@ -1687,7 +1832,7 @@ def render_cross_page(usuario: str) -> None:
     filtered = _apply_validation_card(filtered, validation_card)
     filtered = _apply_situation_card(filtered, situation_card)
 
-    col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
+    col_a, col_b, col_c, col_d, col_e = st.columns([2, 1, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
     table = filtered[[column for column in visible_columns if column in filtered.columns]] if not filtered.empty else filtered
@@ -1707,7 +1852,20 @@ def render_cross_page(usuario: str) -> None:
         use_container_width=True,
         disabled=filtered.empty,
     )
-    col_d.button("Limpar filtros", use_container_width=True, on_click=_clear_cross_summary_filters)
+    filtered_ids = set(pd.to_numeric(filtered.get("lcte_id", pd.Series(dtype=int)), errors="coerce").dropna().astype(int).tolist()) if not filtered.empty else set()
+    pdf_base = cross[pd.to_numeric(cross.get("lcte_id", pd.Series(dtype=int)), errors="coerce").fillna(0).astype(int).isin(filtered_ids)].copy() if filtered_ids and "lcte_id" in cross.columns else pd.DataFrame()
+    period_count = len(_estadia_period_specs(pdf_base))
+    if period_count:
+        col_d.download_button(
+            "PDF posicoes",
+            _tracker_positions_pdf(pdf_base),
+            "posicoes_rastreador_periodos_estadia.pdf",
+            "application/pdf",
+            use_container_width=True,
+        )
+    else:
+        col_d.button("PDF posicoes", use_container_width=True, disabled=True)
+    col_e.button("Limpar filtros", use_container_width=True, on_click=_clear_cross_summary_filters)
 
     render_dataframe(table, height=620, max_rows=2000)
     _render_quick_conclusion(filtered, usuario)

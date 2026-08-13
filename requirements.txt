@@ -4,3 +4,4 @@ openpyxl
 xlsxwriter
 xlrd
 psycopg2-binary
+reportlab

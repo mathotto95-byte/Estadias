@@ -245,6 +245,71 @@ def clear_estadias_import_residues() -> dict[str, Any]:
     }
 
 
+def clear_estadias_full_database() -> dict[str, Any]:
+    tables = [
+        LCTE_ORIGINAL_TABLE,
+        LCTE_NORMALIZED_TABLE,
+        CONTROL_ORIGINAL_TABLE,
+        CONTROL_NORMALIZED_TABLE,
+        RASTREADOR_ORIGINAL_TABLE,
+        RASTREADOR_NORMALIZED_TABLE,
+        LOG_TABLE,
+        CROSS_TABLE,
+        AUDITORIA_TABLE,
+        CONCLUSOES_TABLE,
+        STATUS_LOG_TABLE,
+        LOCAIS_TABLE,
+        PARAMETROS_TABLE,
+        PREFERENCIAS_COLUNAS_TABLE,
+    ]
+    deleted: dict[str, int] = {}
+    db_type = "sqlite"
+    with get_connection() as conn:
+        db_type = getattr(conn, "db_type", "sqlite")
+
+        def exists(table: str) -> bool:
+            if db_type == "postgres":
+                row = conn.execute(
+                    """
+                    select 1
+                    from information_schema.tables
+                    where table_schema = 'public' and table_name = ?
+                    """,
+                    (table,),
+                ).fetchone()
+            else:
+                row = conn.execute("select 1 from sqlite_master where type = 'table' and name = ?", (table,)).fetchone()
+            return bool(row)
+
+        for table in tables:
+            if not exists(table):
+                deleted[table] = 0
+                continue
+            before = conn.execute(f"select count(*) from {table}").fetchone()
+            deleted[table] = int(before[0] or 0) if before else 0
+            conn.execute(f"delete from {table}")
+            if db_type != "postgres":
+                conn.execute("delete from sqlite_sequence where name = ?", (table,))
+
+    compacted = False
+    compact_message = ""
+    if db_type != "postgres" and DB_PATH.exists():
+        try:
+            with sqlite3.connect(DB_PATH, timeout=60, isolation_level=None) as raw_conn:
+                raw_conn.execute("vacuum")
+            compacted = True
+            compact_message = "SQLite compactado."
+        except Exception as exc:
+            compact_message = f"Banco zerado, mas compactacao SQLite nao executada: {exc}"
+
+    return {
+        "deleted": deleted,
+        "total_deleted": sum(deleted.values()),
+        "compacted": compacted,
+        "message": compact_message,
+    }
+
+
 def insert_rows(table: str, rows: list[dict[str, Any]], chunk_size: int = 1000) -> int:
     if not rows:
         return 0
@@ -308,6 +373,25 @@ def read_lcte(filters: dict[str, Any] | None = None, limit: int = 1000) -> pd.Da
 
 def read_rastreador(filters: dict[str, Any] | None = None, limit: int = 1000) -> pd.DataFrame:
     return read_filtered(RASTREADOR_NORMALIZED_TABLE, filters, limit)
+
+
+def read_rastreador_period(placa_norm: str, start: str, end: str, limit: int = 50000) -> pd.DataFrame:
+    if not table_exists(RASTREADOR_NORMALIZED_TABLE):
+        return pd.DataFrame()
+    if not str(placa_norm or "").strip() or not str(start or "").strip() or not str(end or "").strip():
+        return pd.DataFrame()
+    return read_sql(
+        """
+        select *
+        from mod_estadias_rastreador_normalizada
+        where placa_norm = ?
+          and data_hora >= ?
+          and data_hora <= ?
+        order by data_hora asc
+        limit ?
+        """,
+        (str(placa_norm), str(start), str(end), int(limit)),
+    )
 
 
 def sample(table: str, limit: int = 100) -> pd.DataFrame:

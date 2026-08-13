@@ -26,7 +26,7 @@ from src.config.settings import ensure_directories
 from src.database.connection import database_status
 from src.database.migrations import create_modular_tables
 from src.database.connection import get_connection
-from src.modules.estadias.repository import clear_estadias_import_residues
+from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_config_page,
     render_control_page,
@@ -308,6 +308,27 @@ def render_backup_page() -> None:
             st.caption(str(result.get("message")))
         if deleted:
             st.dataframe(pd.DataFrame([{"tabela": key, "registros_removidos": value} for key, value in deleted.items()]), use_container_width=True, hide_index=True)
+
+    with st.expander("Zerar banco operacional completo", expanded=False):
+        st.error("Remove importacoes, resultados, conclusoes, auditoria, logs, locais, parametros e preferencias. Mantem somente a estrutura e configuracoes internas.")
+        confirm_full = st.text_input("Digite ZERAR BANCO para liberar", key="confirm_clear_full_database")
+        if st.button(
+            "Zerar banco completo",
+            type="primary",
+            use_container_width=True,
+            disabled=confirm_full.strip().upper() != "ZERAR BANCO",
+        ):
+            result = clear_estadias_full_database()
+            deleted = result.get("deleted") or {}
+            for key in list(st.session_state):
+                if str(key).startswith("estadias_"):
+                    del st.session_state[key]
+            st.success(f"Banco operacional zerado. Registros removidos: {int(result.get('total_deleted') or 0)}.")
+            if result.get("message"):
+                st.caption(str(result.get("message")))
+            if deleted:
+                st.dataframe(pd.DataFrame([{"tabela": key, "registros_removidos": value} for key, value in deleted.items()]), use_container_width=True, hide_index=True)
+            st.rerun()
 
     st.divider()
     st.subheader("Importar resultados")
