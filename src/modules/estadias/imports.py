@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import re
 from io import BytesIO
@@ -220,6 +221,8 @@ LCTE_REQUIRED_FIELDS = {
     "destino": "Destino",
 }
 
+RASTREADOR_INSERT_CHUNK_SIZE = 1000
+
 
 def _file_bytes(file: BinaryIO) -> bytes:
     if hasattr(file, "getvalue"):
@@ -409,6 +412,30 @@ def import_stats(rows: list[dict[str, Any]], date_column: str) -> dict[str, Any]
         "periodo_inicial": min(dates) if dates else "",
         "periodo_final": max(dates) if dates else "",
     }
+
+
+def _empty_import_stats() -> dict[str, Any]:
+    return {
+        "placas_validas": 0,
+        "datas_validas": 0,
+        "registros_com_erro": 0,
+        "periodo_inicial": "",
+        "periodo_final": "",
+    }
+
+
+def _update_import_stats(stats: dict[str, Any], row: dict[str, Any], date_column: str) -> None:
+    if row.get("placa_norm"):
+        stats["placas_validas"] += 1
+    date_value = str(row.get(date_column) or "")
+    if date_value:
+        stats["datas_validas"] += 1
+        if not stats["periodo_inicial"] or date_value < stats["periodo_inicial"]:
+            stats["periodo_inicial"] = date_value
+        if not stats["periodo_final"] or date_value > stats["periodo_final"]:
+            stats["periodo_final"] = date_value
+    if not row.get("placa_norm") or not row.get(date_column):
+        stats["registros_com_erro"] += 1
 
 
 def _base_original_row(
@@ -784,9 +811,24 @@ def import_rastreador_files(
             df, sheet_name = read_tabular_file(file_name, content)
             df, promoted_header_row = promote_header_row(df, RASTREADOR_ALIASES)
             columns = column_map(df, RASTREADOR_ALIASES)
-            original_rows = []
-            normalized_rows = []
-            for row_index, raw in enumerate(df.to_dict(orient="records")):
+            file_lines = len(df)
+            stats = _empty_import_stats()
+            inserted = 0
+            original_rows: list[dict[str, Any]] = []
+            normalized_rows: list[dict[str, Any]] = []
+
+            def flush_chunks() -> None:
+                nonlocal inserted
+                if original_rows:
+                    inserted += insert_rows(RASTREADOR_ORIGINAL_TABLE, original_rows, RASTREADOR_INSERT_CHUNK_SIZE)
+                    original_rows.clear()
+                if normalized_rows:
+                    insert_rows(RASTREADOR_NORMALIZED_TABLE, normalized_rows, RASTREADOR_INSERT_CHUNK_SIZE)
+                    normalized_rows.clear()
+
+            df_columns = list(df.columns)
+            for row_index, values in enumerate(df.itertuples(index=False, name=None)):
+                raw = dict(zip(df_columns, values))
                 original_base = _base_original_row(
                     raw,
                     lote,
@@ -799,17 +841,19 @@ def import_rastreador_files(
                 )
                 normalized_base = _base_original_row(raw, lote, file_name, usuario, imported_at, file_hash, row_index)
                 original_rows.append(original_base)
-                normalized_rows.append(normalize_rastreador_row(raw, columns, normalized_base, placa_arquivo))
-            stats = import_stats(normalized_rows, "data_hora")
-            inserted = insert_rows(RASTREADOR_ORIGINAL_TABLE, original_rows)
-            insert_rows(RASTREADOR_NORMALIZED_TABLE, normalized_rows)
+                normalized_row = normalize_rastreador_row(raw, columns, normalized_base, placa_arquivo)
+                normalized_rows.append(normalized_row)
+                _update_import_stats(stats, normalized_row, "data_hora")
+                if len(original_rows) >= RASTREADOR_INSERT_CHUNK_SIZE:
+                    flush_chunks()
+            flush_chunks()
             registrar_log_importacao(
                 usuario=usuario,
                 tipo_importacao="RASTREADOR_PLACA",
                 arquivo_origem=file_name,
                 hash_arquivo=file_hash,
                 lote_importacao=lote,
-                quantidade_linhas=len(df),
+                quantidade_linhas=file_lines,
                 quantidade_registros_inseridos=inserted,
                 quantidade_registros_ignorados=stats["registros_com_erro"],
                 status="SUCESSO",
@@ -817,10 +861,16 @@ def import_rastreador_files(
                 detalhes={"aba": sheet_name, "linha_cabecalho_promovida": promoted_header_row, "placa_arquivo": placa_arquivo, "colunas_encontradas": columns, "colunas_arquivo": list(map(str, df.columns)), **stats},
             )
             success += 1
-            total_lines += len(df)
-            rows.append({"arquivo": file_name, "placa_identificada": placa_arquivo, "linhas": len(df), "status": "SUCESSO", "mensagem": "Importado.", "linha_cabecalho_promovida": promoted_header_row, **stats})
+            total_lines += file_lines
+            rows.append({"arquivo": file_name, "placa_identificada": placa_arquivo, "linhas": file_lines, "status": "SUCESSO", "mensagem": "Importado.", "linha_cabecalho_promovida": promoted_header_row, **stats})
+            del df
+            gc.collect()
         except Exception as exc:
             errors += 1
+            try:
+                delete_by_hash(file_hash, "RASTREADOR_PLACA")
+            except Exception:
+                pass
             registrar_log_importacao(
                 usuario=usuario,
                 tipo_importacao="RASTREADOR_PLACA",

@@ -362,11 +362,12 @@ def render_imports_page(usuario: str, role: str) -> None:
                 st.error(result.get("mensagem") or "Erro ao importar CONTROL.")
 
     with st.expander("Importar Relatorios Rastreador por Placa", expanded=True):
+        st.session_state.setdefault("estadias_rastreador_upload_version", 0)
         tracker_files = st.file_uploader(
             "Relatorios do rastreador",
             type=["xlsx", "xls", "csv"],
             accept_multiple_files=True,
-            key="estadias_rastreador_upload",
+            key=f"estadias_rastreador_upload_{int(st.session_state.get('estadias_rastreador_upload_version', 0))}",
         )
         if tracker_files:
             preview = pd.DataFrame(
@@ -379,6 +380,8 @@ def render_imports_page(usuario: str, role: str) -> None:
                 ]
             )
             st.caption(f"{len(tracker_files)} arquivo(s) selecionado(s).")
+            if len(tracker_files) > 20:
+                st.warning("Para evitar queda por memoria/tempo, o sistema vai processar em lotes e liberar os arquivos da tela ao terminar.")
             render_dataframe(preview, height=260, max_rows=120)
         tracker_mode = _duplicate_mode(role, "estadias_rastreador_duplicate_mode")
         if st.button("Importar relatorios do rastreador", type="primary", use_container_width=True, disabled=not tracker_files):
@@ -392,12 +395,19 @@ def render_imports_page(usuario: str, role: str) -> None:
             result = import_rastreador_files(list(tracker_files or []), usuario, tracker_mode, update_progress)
             progress.empty()
             status_text.empty()
+            if int(result.get("total_linhas") or 0) >= 20000 or len(tracker_files or []) > 5:
+                st.session_state["skip_next_auto_backup"] = True
+            st.session_state["estadias_last_tracker_import_result"] = result
+            st.session_state["estadias_rastreador_upload_version"] = int(st.session_state.get("estadias_rastreador_upload_version", 0)) + 1
+            st.rerun()
+        last_tracker_result = st.session_state.get("estadias_last_tracker_import_result")
+        if isinstance(last_tracker_result, dict):
             st.success(
-                f"Lote {result.get('lote')}: {result.get('arquivos_sucesso')} sucesso, "
-                f"{result.get('arquivos_erro')} erro(s), {result.get('arquivos_duplicados')} duplicado(s), "
-                f"{result.get('total_linhas')} linha(s)."
+                f"Lote {last_tracker_result.get('lote')}: {last_tracker_result.get('arquivos_sucesso')} sucesso, "
+                f"{last_tracker_result.get('arquivos_erro')} erro(s), {last_tracker_result.get('arquivos_duplicados')} duplicado(s), "
+                f"{last_tracker_result.get('total_linhas')} linha(s)."
             )
-            render_dataframe(result.get("resultado"), height=360, max_rows=200)
+            render_dataframe(last_tracker_result.get("resultado"), height=360, max_rows=200)
 
 
 def _multiselect_filter(table: str, column: str, label: str) -> list[str]:

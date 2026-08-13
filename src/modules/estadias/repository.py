@@ -185,15 +185,18 @@ def clear_estadias_imported_database() -> dict[str, int]:
     return deleted
 
 
-def insert_rows(table: str, rows: list[dict[str, Any]]) -> int:
+def insert_rows(table: str, rows: list[dict[str, Any]], chunk_size: int = 1000) -> int:
     if not rows:
         return 0
     columns = list(rows[0].keys())
     placeholders = ", ".join("?" for _ in columns)
     sql = f"insert into {table} ({', '.join(columns)}) values ({placeholders})"
-    values = [tuple(row.get(column) for column in columns) for row in rows]
+    effective_chunk_size = max(int(chunk_size or 1000), 1)
     with get_connection() as conn:
-        conn.executemany(sql, values)
+        for start in range(0, len(rows), effective_chunk_size):
+            chunk = rows[start : start + effective_chunk_size]
+            values = [tuple(row.get(column) for column in columns) for row in chunk]
+            conn.executemany(sql, values)
     return len(rows)
 
 

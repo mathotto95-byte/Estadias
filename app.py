@@ -160,6 +160,17 @@ def _restore_from_github_once() -> None:
 
 
 def _auto_backup_if_data_changed() -> None:
+    if st.session_state.pop("skip_next_auto_backup", False):
+        st.session_state["last_github_backup_result"] = {
+            "status": "IGNORADO_IMPORTACAO_PESADA",
+            "message": "Backup automatico ignorado apos importacao pesada. Envie manualmente quando a tela estiver estavel.",
+            "records": 0,
+        }
+        try:
+            st.session_state["last_data_signature"] = data_signature()
+        except Exception:
+            pass
+        return
     try:
         signature = data_signature()
     except Exception:

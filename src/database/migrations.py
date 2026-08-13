@@ -145,6 +145,13 @@ def _create_index_if_column(conn, table: str, index: str, column: str) -> None:
         conn.execute(f"create index if not exists {index} on {table}({column})")
 
 
+def _create_index_if_columns(conn, table: str, index: str, columns: list[str]) -> None:
+    existing = _table_columns(conn, table)
+    selected = [column for column in columns if column in existing]
+    if len(selected) == len(columns):
+        conn.execute(f"create index if not exists {index} on {table}({', '.join(selected)})")
+
+
 def create_modular_tables(conn) -> None:
     for table in MODULAR_BASE_TABLES:
         conn.execute(adapt_sql(conn, create_base_table_sql(table)))
@@ -1648,6 +1655,9 @@ def create_modular_tables(conn) -> None:
         _create_index_if_column(conn, table, f"idx_{table}_data_hora_validacao", "data_hora_validacao")
         _create_index_if_column(conn, table, f"idx_{table}_lote_importacao", "lote_importacao")
         _create_index_if_column(conn, table, f"idx_{table}_lote_validacao", "lote_validacao")
+    _create_index_if_columns(conn, "mod_estadias_rastreador_normalizada", "idx_estadias_rastreador_placa_data", ["placa_norm", "data_hora"])
+    _create_index_if_columns(conn, "mod_estadias_lcte_normalizada", "idx_estadias_lcte_placa_data", ["placa_norm", "data_operacao"])
+    _create_index_if_columns(conn, "mod_estadias_control_normalizada", "idx_estadias_control_placa_data", ["placa_norm", "data_hora_inicio"])
 
 
 def initialize_modular_database() -> None:

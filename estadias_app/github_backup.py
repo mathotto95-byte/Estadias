@@ -51,6 +51,8 @@ ESTADIAS_TABLES = [
     STATUS_LOG_TABLE,
 ]
 
+BACKUP_TABLES = [table for table in ESTADIAS_TABLES if table != RASTREADOR_ORIGINAL_TABLE]
+
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
     "GITHUB_REPOSITORY": ["GITHUB_REPOSITORY", "github_repository", "repository", "repo"],
@@ -257,7 +259,7 @@ def _table_columns(table: str) -> list[str]:
 
 def all_database_tables() -> dict[str, pd.DataFrame]:
     tables: dict[str, pd.DataFrame] = {}
-    for table in ESTADIAS_TABLES:
+    for table in BACKUP_TABLES:
         if _table_exists(table):
             tables[table] = read_sql(f"select * from {table}")
         else:
@@ -299,7 +301,7 @@ def database_has_data() -> bool:
 def data_signature() -> str:
     pieces: list[str] = []
     with get_connection() as conn:
-        for table in ESTADIAS_TABLES:
+        for table in BACKUP_TABLES:
             if not _table_exists(table):
                 pieces.append(f"{table}:0:0")
                 continue
