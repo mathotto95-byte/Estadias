@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
 
+from src.config.settings import DB_PATH
 from src.database.connection import get_connection, read_sql
 from src.modules.repository import latest_import_logs, table_count, table_exists
 from src.utils.timezone import brasilia_now_iso
@@ -183,6 +185,64 @@ def clear_estadias_imported_database() -> dict[str, int]:
             if db_type != "postgres":
                 conn.execute("delete from sqlite_sequence where name = ?", (table,))
     return deleted
+
+
+def clear_estadias_import_residues() -> dict[str, Any]:
+    tables = [
+        LCTE_ORIGINAL_TABLE,
+        LCTE_NORMALIZED_TABLE,
+        CONTROL_ORIGINAL_TABLE,
+        CONTROL_NORMALIZED_TABLE,
+        RASTREADOR_ORIGINAL_TABLE,
+        RASTREADOR_NORMALIZED_TABLE,
+        LOG_TABLE,
+    ]
+    deleted: dict[str, int] = {}
+    db_type = "sqlite"
+    with get_connection() as conn:
+        db_type = getattr(conn, "db_type", "sqlite")
+
+        def exists(table: str) -> bool:
+            if db_type == "postgres":
+                row = conn.execute(
+                    """
+                    select 1
+                    from information_schema.tables
+                    where table_schema = 'public' and table_name = ?
+                    """,
+                    (table,),
+                ).fetchone()
+            else:
+                row = conn.execute("select 1 from sqlite_master where type = 'table' and name = ?", (table,)).fetchone()
+            return bool(row)
+
+        for table in tables:
+            if not exists(table):
+                deleted[table] = 0
+                continue
+            before = conn.execute(f"select count(*) from {table}").fetchone()
+            deleted[table] = int(before[0] or 0) if before else 0
+            conn.execute(f"delete from {table}")
+            if db_type != "postgres":
+                conn.execute("delete from sqlite_sequence where name = ?", (table,))
+
+    compacted = False
+    compact_message = ""
+    if db_type != "postgres" and DB_PATH.exists():
+        try:
+            with sqlite3.connect(DB_PATH, timeout=60, isolation_level=None) as raw_conn:
+                raw_conn.execute("vacuum")
+            compacted = True
+            compact_message = "SQLite compactado."
+        except Exception as exc:
+            compact_message = f"Limpeza concluida, mas compactacao SQLite nao executada: {exc}"
+
+    return {
+        "deleted": deleted,
+        "total_deleted": sum(deleted.values()),
+        "compacted": compacted,
+        "message": compact_message,
+    }
 
 
 def insert_rows(table: str, rows: list[dict[str, Any]], chunk_size: int = 1000) -> int:

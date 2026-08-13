@@ -22,10 +22,11 @@ from estadias_app.github_backup import (
     restore_json_bytes,
     test_github_connection,
 )
-from src.config.settings import DB_PATH, ensure_directories
+from src.config.settings import ensure_directories
 from src.database.connection import database_status
 from src.database.migrations import create_modular_tables
 from src.database.connection import get_connection
+from src.modules.estadias.repository import clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_config_page,
     render_control_page,
@@ -286,6 +287,27 @@ def render_backup_page() -> None:
         use_container_width=True,
     )
     col3.download_button("Baixar resultado ZIP", _database_zip(), f"backup_resultado_estadias_{stamp}.zip", "application/zip", use_container_width=True)
+
+    st.divider()
+    st.subheader("Limpar residuos das importacoes")
+    st.warning("Remove somente LCTE, CONTROL, RASTREADOR e logs de importacao. Os resultados calculados, conclusoes, auditoria e configuracoes ficam preservados.")
+    confirm_residue = st.text_input("Digite LIMPAR RESIDUOS para liberar", key="confirm_clear_import_residues")
+    if st.button(
+        "Limpar residuos das importacoes",
+        type="primary",
+        use_container_width=True,
+        disabled=confirm_residue.strip().upper() != "LIMPAR RESIDUOS",
+    ):
+        result = clear_estadias_import_residues()
+        deleted = result.get("deleted") or {}
+        for key in list(st.session_state):
+            if str(key).startswith(("estadias_lcte_", "estadias_control_", "estadias_rastreador_", "estadias_last_tracker_import")):
+                del st.session_state[key]
+        st.success(f"Residuos limpos. Registros removidos: {int(result.get('total_deleted') or 0)}.")
+        if result.get("message"):
+            st.caption(str(result.get("message")))
+        if deleted:
+            st.dataframe(pd.DataFrame([{"tabela": key, "registros_removidos": value} for key, value in deleted.items()]), use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("Importar resultados")
