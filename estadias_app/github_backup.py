@@ -51,7 +51,16 @@ ESTADIAS_TABLES = [
     STATUS_LOG_TABLE,
 ]
 
-BACKUP_TABLES = [table for table in ESTADIAS_TABLES if table != RASTREADOR_ORIGINAL_TABLE]
+BACKUP_TABLES = [
+    CROSS_TABLE,
+    CONCLUSOES_TABLE,
+    AUDITORIA_TABLE,
+    STATUS_LOG_TABLE,
+    CONFIG_TABLE,
+    LOCAIS_TABLE,
+    PARAMETROS_TABLE,
+    PREFERENCIAS_COLUNAS_TABLE,
+]
 
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
@@ -286,7 +295,7 @@ def backup_json_bytes() -> bytes:
 
 
 def database_has_data() -> bool:
-    for table in ESTADIAS_TABLES:
+    for table in BACKUP_TABLES:
         if not _table_exists(table):
             continue
         try:
@@ -322,7 +331,7 @@ def restore_payload(payload: dict[str, Any], mode: str = "merge") -> dict[str, A
     restored = ignored = errors = 0
     replace = mode == "replace"
     with get_connection() as conn:
-        for table in ESTADIAS_TABLES:
+        for table in BACKUP_TABLES:
             rows = tables.get(table) or []
             if replace and _table_exists(table):
                 conn.execute(f"delete from {table}")

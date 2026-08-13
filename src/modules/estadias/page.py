@@ -209,6 +209,92 @@ def _permanence_rows(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
+def _format_export_datetime(value: object) -> str:
+    if value in [None, ""]:
+        return ""
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt):
+            return str(value or "")
+        return dt.strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        return str(value or "")
+
+
+def _add_minutes_to_datetime(value: object, minutes: object) -> str:
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt):
+            return ""
+        minute_value = float(pd.to_numeric(pd.Series([minutes]), errors="coerce").fillna(0).iloc[0])
+        return (dt + pd.to_timedelta(max(minute_value, 0), unit="m")).strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _estadia_period_rows(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "ID viagem",
+        "CT-e",
+        "NF",
+        "Placa",
+        "Cliente",
+        "Motorista",
+        "Tipo estadia",
+        "Local",
+        "UF",
+        "Chegada no ponto",
+        "Inicio da estadia",
+        "Saida do ponto",
+        "Tempo total no ponto (min)",
+        "Franquia (min)",
+        "Tempo estadia (min)",
+        "Tempo estadia",
+        "Valor estimado",
+        "Status estadia",
+        "Confianca permanencia (%)",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    rows: list[dict[str, object]] = []
+    for _, row in df.iterrows():
+        common = {
+            "ID viagem": row.get("id"),
+            "CT-e": row.get("cte"),
+            "NF": row.get("nf"),
+            "Placa": row.get("placa_norm"),
+            "Cliente": row.get("cliente"),
+            "Motorista": row.get("motorista"),
+            "Valor estimado": row.get("valor_estimado_estadia"),
+            "Status estadia": row.get("status_estadia"),
+        }
+        for tipo, local_col, uf_col, arrival_col, departure_col, time_col, allowance_col, stay_col, confidence_col in [
+            ("CARGA", "origem", "uf_origem", "chegada_origem", "saida_origem", "tempo_origem_min", "franquia_carga_min", "estadia_carga_min", "confianca_permanencia_origem_pct"),
+            ("DESCARGA", "destino", "uf_destino", "chegada_destino", "saida_destino", "tempo_destino_min", "franquia_descarga_min", "estadia_descarga_min", "confianca_permanencia_destino_pct"),
+        ]:
+            stay_min = float(pd.to_numeric(pd.Series([row.get(stay_col)]), errors="coerce").fillna(0).iloc[0])
+            if stay_min <= 0:
+                continue
+            arrival = row.get(arrival_col)
+            rows.append(
+                {
+                    **common,
+                    "Tipo estadia": tipo,
+                    "Local": row.get(local_col),
+                    "UF": row.get(uf_col),
+                    "Chegada no ponto": _format_export_datetime(arrival),
+                    "Inicio da estadia": _add_minutes_to_datetime(arrival, row.get(allowance_col)),
+                    "Saida do ponto": _format_export_datetime(row.get(departure_col)),
+                    "Tempo total no ponto (min)": row.get(time_col),
+                    "Franquia (min)": row.get(allowance_col),
+                    "Tempo estadia (min)": stay_min,
+                    "Tempo estadia": _format_minutes_value(stay_min),
+                    "Confianca permanencia (%)": row.get(confidence_col),
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _with_estadia_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -241,6 +327,7 @@ def _export_sheets(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     motivos = codigo_motivo + " " + motivo_falha
     return {
         "resultado_completo": result,
+        "periodos_estadia": _estadia_period_rows(df),
         "permanencia_origem_destino": permanencias,
         "com_estadia": result[horas.gt(0)],
         "elegiveis": result[elegiveis],
@@ -1054,13 +1141,22 @@ def _render_cross_panel(panel: str, title: str, cross: pd.DataFrame, usuario: st
     table = _format_cross_dates(_with_estadia_display_columns(filtered))
     visible_columns = [column for column in visible_columns if column in table.columns]
     export_df = table[visible_columns] if visible_columns else table
+    periodos_estadia = _estadia_period_rows(filtered)
     st.download_button(
         "Exportar painel Excel",
-        dataframe_to_excel({"painel": export_df, "resultado_completo": _with_estadia_display_columns(filtered)}),
+        dataframe_to_excel({"painel": export_df, "resultado_completo": _with_estadia_display_columns(filtered), "periodos_estadia": periodos_estadia}),
         f"estadias_{panel.lower()}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         disabled=filtered.empty,
+    )
+    st.download_button(
+        "Exportar periodos de estadia",
+        dataframe_to_excel({"periodos_estadia": periodos_estadia}),
+        f"periodos_estadia_{panel.lower()}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        disabled=filtered.empty or periodos_estadia.empty,
     )
     render_dataframe(export_df, height=560, max_rows=1000)
 

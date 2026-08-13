@@ -249,27 +249,26 @@ def _database_zip() -> bytes:
     tables = all_database_tables()
     output = BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("estadias_backup.json", backup_json_bytes())
-        archive.writestr("estadias_backup.xlsx", dataframe_to_excel(tables))
+        archive.writestr("estadias_resultado_backup.json", backup_json_bytes())
+        archive.writestr("estadias_resultado_backup.xlsx", dataframe_to_excel(tables))
         archive.writestr(
             "manifesto.json",
             json.dumps(
                 {
                     "gerado_em": brasilia_now_iso(),
                     "tabelas": {name: int(len(df)) for name, df in tables.items()},
-                    "sqlite": str(DB_PATH) if DB_PATH.exists() else "",
+                    "observacao": "Backup enxuto: contem resultados, conclusoes e configuracoes. Bases importadas LCTE/CONTROL/RASTREADOR ficam fora para reduzir tamanho.",
                 },
                 ensure_ascii=False,
                 indent=2,
             ),
         )
-        if DB_PATH.exists():
-            archive.write(DB_PATH, "sqlite/estadias.sqlite3")
     return output.getvalue()
 
 
 def render_backup_page() -> None:
-    st.subheader("Backup e recuperacao do banco")
+    st.subheader("Backup e recuperacao dos resultados")
+    st.caption("Backup enxuto: salva resultados, conclusoes, auditoria e configuracoes. Planilhas importadas LCTE/CONTROL/RASTREADOR nao entram no backup.")
     tables = all_database_tables()
     total = sum(len(df) for df in tables.values())
     c1, c2, c3 = st.columns(3)
@@ -278,19 +277,19 @@ def render_backup_page() -> None:
     c3.metric("Formato seguro", "JSON")
     stamp = brasilia_now().strftime("%Y%m%d_%H%M%S")
     col1, col2, col3 = st.columns(3)
-    col1.download_button("Baixar banco JSON", backup_json_bytes(), f"estadias_banco_{stamp}.json", "application/json", use_container_width=True)
+    col1.download_button("Baixar resultado JSON", backup_json_bytes(), f"estadias_resultado_{stamp}.json", "application/json", use_container_width=True)
     col2.download_button(
-        "Baixar banco Excel",
+        "Baixar resultado Excel",
         dataframe_to_excel(tables),
-        f"estadias_banco_{stamp}.xlsx",
+        f"estadias_resultado_{stamp}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    col3.download_button("Baixar banco ZIP", _database_zip(), f"backup_estadias_{stamp}.zip", "application/zip", use_container_width=True)
+    col3.download_button("Baixar resultado ZIP", _database_zip(), f"backup_resultado_estadias_{stamp}.zip", "application/zip", use_container_width=True)
 
     st.divider()
-    st.subheader("Importar banco")
-    uploaded = st.file_uploader("Arquivo JSON de backup", type=["json"], key="database_backup_upload")
+    st.subheader("Importar resultados")
+    uploaded = st.file_uploader("Arquivo JSON de backup de resultados", type=["json"], key="database_backup_upload")
     mode_label = st.radio("Modo de importacao", ["Mesclar com banco atual", "Substituir banco atual"], horizontal=True)
     mode = "replace" if mode_label.startswith("Substituir") else "merge"
     confirm = ""
