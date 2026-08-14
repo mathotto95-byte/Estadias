@@ -397,6 +397,32 @@ def _select_control_matches(control: pd.DataFrame, trip: pd.Series, log: list[st
     return selected, best_score, classification, best_criteria, reason
 
 
+def _tracker_window_bounds(
+    trip: pd.Series,
+    control_matches: pd.DataFrame,
+    config: dict[str, str],
+    log: list[str],
+) -> tuple[datetime | None, datetime | None, str]:
+    lcte_start, lcte_end, source = _date_window(trip, config)
+    start, end = lcte_start, lcte_end
+    if not control_matches.empty:
+        control_start = _to_datetime(control_matches.iloc[0].get("data_hora_inicio")) or _to_datetime(control_matches.iloc[0].get("data_inicio"))
+        control_end = _to_datetime(control_matches.iloc[0].get("data_hora_fim")) or _to_datetime(control_matches.iloc[0].get("data_fim"))
+        hours_before = _config_number(config, "janela_control_horas_antes", 12)
+        hours_after = _config_number(config, "janela_control_horas_depois", 24)
+        if control_start:
+            start = control_start - timedelta(hours=max(hours_before, 0))
+        if control_end:
+            end = control_end + timedelta(hours=max(hours_after, 0))
+        source = "CONTROL_OPERACIONAL"
+        log.append("RASTREADOR: janela definida pelo CONTROL como referencia operacional, sem presumir chegada ou saida.")
+    return start, end, source
+
+
+def _dt_sql(value: datetime | None) -> str:
+    return value.isoformat(sep=" ", timespec="seconds") if value else ""
+
+
 def _filter_tracker_for_trip(
     rastreador: pd.DataFrame,
     trip: pd.Series,
@@ -415,25 +441,51 @@ def _filter_tracker_for_trip(
     if view.empty:
         return view, window_info
     view = _ensure_datetime_column(view, "data_hora", "_data_dt")
-    lcte_start, lcte_end, source = _date_window(trip, config)
-    start, end = lcte_start, lcte_end
-    if not control_matches.empty:
-        control_start = _to_datetime(control_matches.iloc[0].get("data_hora_inicio")) or _to_datetime(control_matches.iloc[0].get("data_inicio"))
-        control_end = _to_datetime(control_matches.iloc[0].get("data_hora_fim")) or _to_datetime(control_matches.iloc[0].get("data_fim"))
-        hours_before = _config_number(config, "janela_control_horas_antes", 12)
-        hours_after = _config_number(config, "janela_control_horas_depois", 24)
-        if control_start:
-            start = control_start - timedelta(hours=max(hours_before, 0))
-        if control_end:
-            end = control_end + timedelta(hours=max(hours_after, 0))
-        source = "CONTROL_OPERACIONAL"
-        log.append("RASTREADOR: janela definida pelo CONTROL como referencia operacional, sem presumir chegada ou saida.")
+    start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
     window_info.update({"fonte": source, "inicio": start, "fim": end})
     if start and end:
         view = view[view["_data_dt"].between(start, end)].copy()
         log.append(f"RASTREADOR: {len(view)} registro(s) na janela {start} a {end}.")
     window_info["pontos_janela"] = int(len(view))
     return view.sort_values("_data_dt"), window_info
+
+
+def _filter_tracker_for_trip_from_db(
+    trip: pd.Series,
+    control_matches: pd.DataFrame,
+    config: dict[str, str],
+    log: list[str],
+    plate_count_cache: dict[str, int] | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    plate = str(trip.get("placa_norm") or "")
+    window_info: dict[str, Any] = {"fonte": "", "inicio": None, "fim": None, "total_pontos_placa": 0, "pontos_janela": 0}
+    if not plate:
+        log.append("RASTREADOR: placa LCTE ausente.")
+        return pd.DataFrame(), window_info
+
+    if plate_count_cache is not None and plate in plate_count_cache:
+        total_plate = plate_count_cache[plate]
+    else:
+        total_plate = repository.count_rastreador_plate(plate)
+        if plate_count_cache is not None:
+            plate_count_cache[plate] = total_plate
+    window_info["total_pontos_placa"] = total_plate
+    log.append(f"RASTREADOR: {total_plate} registro(s) encontrados para placa.")
+    if total_plate <= 0:
+        return pd.DataFrame(), window_info
+
+    start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
+    window_info.update({"fonte": source, "inicio": start, "fim": end})
+    if not start or not end:
+        log.append("RASTREADOR: janela de busca nao definida.")
+        return pd.DataFrame(), window_info
+
+    view = repository.read_rastreador_period(plate, _dt_sql(start), _dt_sql(end), 120000)
+    if not view.empty:
+        view = _ensure_datetime_column(view, "data_hora", "_data_dt").sort_values("_data_dt")
+    window_info["pontos_janela"] = int(len(view))
+    log.append(f"RASTREADOR: {len(view)} registro(s) na janela {start} a {end}.")
+    return view, window_info
 
 
 def _stopped_mask(df: pd.DataFrame) -> pd.Series:
@@ -1341,7 +1393,6 @@ def top_indicators(limit: int = 10) -> dict[str, pd.DataFrame]:
 def build_cross_rows() -> list[dict[str, object]]:
     lcte = repository.read_lcte({}, 200000)
     control = repository.read_control({}, 300000)
-    rastreador = repository.read_rastreador({}, 700000)
     parametros = repository.read_parametros(10000)
     config = _read_config_values()
     min_stop = _config_number(config, "tempo_minimo_parado", 30)
@@ -1353,6 +1404,12 @@ def build_cross_rows() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     if lcte.empty:
         return rows
+    control_by_plate: dict[str, pd.DataFrame] = {}
+    if not control.empty and "placa_norm" in control.columns:
+        for plate_key, group in control.groupby(control["placa_norm"].fillna("").astype(str), dropna=False):
+            control_by_plate[str(plate_key)] = group.copy()
+    empty_control = control.iloc[0:0].copy() if not control.empty else pd.DataFrame()
+    tracker_plate_counts: dict[str, int] = {}
 
     for _, trip in lcte.iterrows():
         log: list[str] = ["LCTE: viagem mestre encontrada."]
@@ -1370,7 +1427,8 @@ def build_cross_rows() -> list[dict[str, object]]:
             reason_codes.append("LCTE_SEM_DESTINO")
 
         try:
-            control_matches, control_score, control_class, control_criteria, control_reason = _select_control_matches(control, trip, log)
+            control_candidates = control_by_plate.get(plate, empty_control)
+            control_matches, control_score, control_class, control_criteria, control_reason = _select_control_matches(control_candidates, trip, log)
             if control_reason:
                 reason_codes.append(control_reason)
             if not control_matches.empty:
@@ -1380,7 +1438,7 @@ def build_cross_rows() -> list[dict[str, object]]:
                 control_status = normalize_text(control_row.get("status"))
                 if "VIAJ" in control_status or (not str(control_row.get("data_hora_fim") or "") and not str(control_row.get("data_fim") or "")):
                     reason_codes.append("CONTROL_VIAGEM_EM_ANDAMENTO")
-            tracker_matches, window_info = _filter_tracker_for_trip(rastreador, trip, control_matches, config, log)
+            tracker_matches, window_info = _filter_tracker_for_trip_from_db(trip, control_matches, config, log, tracker_plate_counts)
             if tracker_matches.empty:
                 reason_codes.append("RASTREADOR_SEM_REGISTROS")
             elif tracker_matches.get("_data_dt", pd.Series(dtype=object)).isna().all():
@@ -1491,7 +1549,7 @@ def build_cross_rows() -> list[dict[str, object]]:
                 "Relacionamento com CONTROL": status_control,
                 "Pontuacao CONTROL": control_score,
                 "Criterios CONTROL": control_criteria,
-                "Registros CONTROL por placa": int(control[control["placa_norm"].fillna("").astype(str).eq(plate)].shape[0]) if not control.empty and plate else 0,
+                "Registros CONTROL por placa": int(len(control_candidates)) if plate else 0,
                 "Registros do rastreador localizados": not tracker_matches.empty,
                 "Origem localizada": encontrou_origem,
                 "Destino localizado": encontrou_destino,

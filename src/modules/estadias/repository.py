@@ -394,6 +394,23 @@ def read_rastreador_period(placa_norm: str, start: str, end: str, limit: int = 5
     )
 
 
+def count_rastreador_plate(placa_norm: str) -> int:
+    if not table_exists(RASTREADOR_NORMALIZED_TABLE):
+        return 0
+    if not str(placa_norm or "").strip():
+        return 0
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            select count(*)
+            from mod_estadias_rastreador_normalizada
+            where placa_norm = ?
+            """,
+            (str(placa_norm),),
+        ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
 def sample(table: str, limit: int = 100) -> pd.DataFrame:
     return read_filtered(table, {}, limit)
 
