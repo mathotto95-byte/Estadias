@@ -13,6 +13,7 @@ from src.normalizers.fields import normalize_document_number, normalize_text
 
 
 STOP_WORDS = {"DE", "DA", "DO", "DAS", "DOS", "E", "A", "O", "AS", "OS", "EM", "NA", "NO", "KM", "ROD", "RODOVIA", "BASE"}
+PLATE_PATTERN = re.compile(r"[A-Z]{3}[0-9][A-Z0-9][0-9]{2}")
 
 MOTIVOS = {
     "LCTE_SEM_PLACA": "Placa ausente ou invalida no LCTE.",
@@ -296,6 +297,22 @@ def _doc_set(value: Any) -> set[str]:
     return docs
 
 
+def _normalize_plate_candidate(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+    return text if PLATE_PATTERN.fullmatch(text) else ""
+
+
+def _trip_plate_candidates(trip: pd.Series) -> list[str]:
+    plates: list[str] = []
+    principal = _normalize_plate_candidate(trip.get("placa_norm"))
+    if principal:
+        plates.append(principal)
+    composition = str(trip.get("placas_composicao") or "").upper()
+    for match in PLATE_PATTERN.findall(composition):
+        plates.append(match)
+    return list(dict.fromkeys(plates))
+
+
 def _same_doc(row: pd.Series, trip: pd.Series) -> bool:
     trip_nfs = _doc_set(trip.get("nf"))
     row_nfs = _doc_set(row.get("nf")) if "nf" in row.index else set()
@@ -328,7 +345,7 @@ def _date_window(trip: pd.Series, config: dict[str, str]) -> tuple[datetime | No
 def _score_control_row(row: pd.Series, trip: pd.Series) -> tuple[float, dict[str, Any]]:
     criteria: dict[str, Any] = {}
     score = 0.0
-    plate_ok = str(row.get("placa_norm") or "") == str(trip.get("placa_norm") or "") and str(trip.get("placa_norm") or "") != ""
+    plate_ok = str(row.get("placa_norm") or "") in set(_trip_plate_candidates(trip))
     criteria["placa"] = 35 if plate_ok else 0
     score += criteria["placa"]
 
@@ -371,9 +388,9 @@ def _classify_score(score: float) -> str:
 def _select_control_matches(control: pd.DataFrame, trip: pd.Series, log: list[str]) -> tuple[pd.DataFrame, float, str, dict[str, Any], str]:
     if control.empty:
         return pd.DataFrame(), 0, "NAO_RELACIONADO", {}, "CONTROL_NAO_LOCALIZADO"
-    plate = str(trip.get("placa_norm") or "")
-    candidates = control[control["placa_norm"].fillna("").astype(str).eq(plate)].copy() if plate else pd.DataFrame()
-    log.append(f"CONTROL: {len(candidates)} candidato(s) pela placa {plate or '-'}")
+    plates = _trip_plate_candidates(trip)
+    candidates = control[control["placa_norm"].fillna("").astype(str).isin(plates)].copy() if plates else pd.DataFrame()
+    log.append(f"CONTROL: {len(candidates)} candidato(s) pela(s) placa(s) {', '.join(plates) or '-'}")
     if candidates.empty:
         return candidates, 0, "NAO_RELACIONADO", {}, "CONTROL_NAO_LOCALIZADO"
     trip_nfs = _doc_set(trip.get("nf"))
@@ -405,7 +422,12 @@ def _tracker_window_bounds(
 ) -> tuple[datetime | None, datetime | None, str]:
     lcte_start, lcte_end, source = _date_window(trip, config)
     start, end = lcte_start, lcte_end
-    if not control_matches.empty:
+    if control_matches.empty:
+        if start and end:
+            log.append("RASTREADOR: janela definida pelo LCTE porque nao houve CONTROL confirmado.")
+        else:
+            log.append("RASTREADOR: LCTE sem data valida para definir janela.")
+    else:
         control_start = _to_datetime(control_matches.iloc[0].get("data_hora_inicio")) or _to_datetime(control_matches.iloc[0].get("data_inicio"))
         control_end = _to_datetime(control_matches.iloc[0].get("data_hora_fim")) or _to_datetime(control_matches.iloc[0].get("data_fim"))
         hours_before = _config_number(config, "janela_control_horas_antes", 12)
@@ -430,19 +452,19 @@ def _filter_tracker_for_trip(
     config: dict[str, str],
     log: list[str],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    plate = str(trip.get("placa_norm") or "")
+    plates = _trip_plate_candidates(trip)
     window_info: dict[str, Any] = {"fonte": "", "inicio": None, "fim": None, "total_pontos_placa": 0, "pontos_janela": 0}
-    if not plate:
+    if not plates:
         log.append("RASTREADOR: placa LCTE ausente.")
         return pd.DataFrame(), window_info
-    view = rastreador[rastreador["placa_norm"].fillna("").astype(str).eq(plate)].copy()
+    start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
+    window_info.update({"fonte": source, "inicio": start, "fim": end})
+    view = rastreador[rastreador["placa_norm"].fillna("").astype(str).isin(plates)].copy()
     window_info["total_pontos_placa"] = int(len(view))
-    log.append(f"RASTREADOR: {len(view)} registro(s) encontrados para placa.")
+    log.append(f"RASTREADOR: {len(view)} registro(s) encontrados para placa(s) {', '.join(plates)}.")
     if view.empty:
         return view, window_info
     view = _ensure_datetime_column(view, "data_hora", "_data_dt")
-    start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
-    window_info.update({"fonte": source, "inicio": start, "fim": end})
     if start and end:
         view = view[view["_data_dt"].between(start, end)].copy()
         log.append(f"RASTREADOR: {len(view)} registro(s) na janela {start} a {end}.")
@@ -457,30 +479,31 @@ def _filter_tracker_for_trip_from_db(
     log: list[str],
     plate_count_cache: dict[str, int] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    plate = str(trip.get("placa_norm") or "")
+    plates = _trip_plate_candidates(trip)
     window_info: dict[str, Any] = {"fonte": "", "inicio": None, "fim": None, "total_pontos_placa": 0, "pontos_janela": 0}
-    if not plate:
+    if not plates:
         log.append("RASTREADOR: placa LCTE ausente.")
-        return pd.DataFrame(), window_info
-
-    if plate_count_cache is not None and plate in plate_count_cache:
-        total_plate = plate_count_cache[plate]
-    else:
-        total_plate = repository.count_rastreador_plate(plate)
-        if plate_count_cache is not None:
-            plate_count_cache[plate] = total_plate
-    window_info["total_pontos_placa"] = total_plate
-    log.append(f"RASTREADOR: {total_plate} registro(s) encontrados para placa.")
-    if total_plate <= 0:
         return pd.DataFrame(), window_info
 
     start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
     window_info.update({"fonte": source, "inicio": start, "fim": end})
+    cache_key = "|".join(plates)
+    if plate_count_cache is not None and cache_key in plate_count_cache:
+        total_plate = plate_count_cache[cache_key]
+    else:
+        total_plate = repository.count_rastreador_plates(plates)
+        if plate_count_cache is not None:
+            plate_count_cache[cache_key] = total_plate
+    window_info["total_pontos_placa"] = total_plate
+    log.append(f"RASTREADOR: {total_plate} registro(s) encontrados para placa(s) {', '.join(plates)}.")
+    if total_plate <= 0:
+        return pd.DataFrame(), window_info
+
     if not start or not end:
         log.append("RASTREADOR: janela de busca nao definida.")
         return pd.DataFrame(), window_info
 
-    view = repository.read_rastreador_period(plate, _dt_sql(start), _dt_sql(end), 120000)
+    view = repository.read_rastreador_period_for_plates(plates, _dt_sql(start), _dt_sql(end), 120000)
     if not view.empty:
         view = _ensure_datetime_column(view, "data_hora", "_data_dt").sort_values("_data_dt")
     window_info["pontos_janela"] = int(len(view))
@@ -1427,7 +1450,17 @@ def build_cross_rows() -> list[dict[str, object]]:
             reason_codes.append("LCTE_SEM_DESTINO")
 
         try:
-            control_candidates = control_by_plate.get(plate, empty_control)
+            control_frames = [control_by_plate.get(candidate) for candidate in _trip_plate_candidates(trip)]
+            control_frames = [frame for frame in control_frames if frame is not None and not frame.empty]
+            if control_frames:
+                control_candidates = pd.concat(control_frames, ignore_index=False)
+                control_candidates = (
+                    control_candidates.drop_duplicates(subset=["id"])
+                    if "id" in control_candidates.columns
+                    else control_candidates.loc[~control_candidates.index.duplicated()]
+                )
+            else:
+                control_candidates = empty_control
             control_matches, control_score, control_class, control_criteria, control_reason = _select_control_matches(control_candidates, trip, log)
             if control_reason:
                 reason_codes.append(control_reason)

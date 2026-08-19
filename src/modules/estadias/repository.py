@@ -380,17 +380,27 @@ def read_rastreador_period(placa_norm: str, start: str, end: str, limit: int = 5
         return pd.DataFrame()
     if not str(placa_norm or "").strip() or not str(start or "").strip() or not str(end or "").strip():
         return pd.DataFrame()
+    return read_rastreador_period_for_plates([str(placa_norm)], start, end, limit)
+
+
+def read_rastreador_period_for_plates(placas_norm: list[str], start: str, end: str, limit: int = 50000) -> pd.DataFrame:
+    if not table_exists(RASTREADOR_NORMALIZED_TABLE):
+        return pd.DataFrame()
+    plates = list(dict.fromkeys(str(plate or "").strip() for plate in placas_norm if str(plate or "").strip()))
+    if not plates or not str(start or "").strip() or not str(end or "").strip():
+        return pd.DataFrame()
+    placeholders = ", ".join("?" for _ in plates)
     return read_sql(
-        """
+        f"""
         select *
         from mod_estadias_rastreador_normalizada
-        where placa_norm = ?
+        where placa_norm in ({placeholders})
           and data_hora >= ?
           and data_hora <= ?
         order by data_hora asc
         limit ?
         """,
-        (str(placa_norm), str(start), str(end), int(limit)),
+        tuple(plates + [str(start), str(end), int(limit)]),
     )
 
 
@@ -399,14 +409,24 @@ def count_rastreador_plate(placa_norm: str) -> int:
         return 0
     if not str(placa_norm or "").strip():
         return 0
+    return count_rastreador_plates([str(placa_norm)])
+
+
+def count_rastreador_plates(placas_norm: list[str]) -> int:
+    if not table_exists(RASTREADOR_NORMALIZED_TABLE):
+        return 0
+    plates = list(dict.fromkeys(str(plate or "").strip() for plate in placas_norm if str(plate or "").strip()))
+    if not plates:
+        return 0
+    placeholders = ", ".join("?" for _ in plates)
     with get_connection() as conn:
         row = conn.execute(
-            """
+            f"""
             select count(*)
             from mod_estadias_rastreador_normalizada
-            where placa_norm = ?
+            where placa_norm in ({placeholders})
             """,
-            (str(placa_norm),),
+            tuple(plates),
         ).fetchone()
     return int(row[0] or 0) if row else 0
 
