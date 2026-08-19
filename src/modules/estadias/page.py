@@ -1396,10 +1396,10 @@ def _line_status(row: pd.Series, tipo: str) -> str:
     stay_col = "estadia_carga_min" if tipo == "ORIGEM" else "estadia_descarga_min"
     if not _safe_bool_value(row.get(found_col)):
         return "PENDENTE"
-    if str(row.get("painel_atual") or "").upper() == "VERIFICACAO" or _safe_bool_value(row.get("precisa_verificar")):
-        return "PENDENTE"
     if float(pd.to_numeric(pd.Series([row.get(stay_col)]), errors="coerce").fillna(0).iloc[0]) > 0:
         return "ESTADIA"
+    if str(row.get("painel_atual") or "").upper() == "VERIFICACAO" or _safe_bool_value(row.get("precisa_verificar")):
+        return "PENDENTE"
     return "SEM ESTADIA"
 
 
