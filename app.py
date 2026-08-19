@@ -18,6 +18,7 @@ from estadias_app.github_backup import (
     github_backup_configured,
     github_diagnostic,
     github_settings,
+    prune_history,
     restore_from_github_if_empty,
     restore_json_bytes,
     test_github_connection,
@@ -231,6 +232,20 @@ def _render_github_sidebar() -> None:
             st.sidebar.success("Backup enviado para GitHub.")
         else:
             st.sidebar.warning(result.get("message") or "Backup GitHub nao concluido.")
+
+    if st.sidebar.button(
+        "Limpar historico antigo de backups",
+        use_container_width=True,
+        disabled=not github_backup_configured(),
+        help="Remove snapshots antigos de backups/history, mantendo apenas os mais recentes. Reduz o tamanho do repositorio.",
+    ):
+        prune_result = prune_history()
+        if prune_result.get("status") == "SUCESSO":
+            st.sidebar.success(f"Historico limpo: {prune_result.get('removidos', 0)} arquivo(s) removido(s).")
+        elif prune_result.get("status") == "NAO_CONFIGURADO":
+            st.sidebar.warning("GitHub backup nao configurado.")
+        else:
+            st.sidebar.warning(f"Limpeza parcial: {prune_result.get('removidos', 0)} removido(s), {prune_result.get('erros', 0)} erro(s).")
 
 
 def _render_status() -> None:

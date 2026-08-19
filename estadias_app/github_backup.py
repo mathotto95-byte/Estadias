@@ -62,6 +62,11 @@ BACKUP_TABLES = [
     PREFERENCIAS_COLUNAS_TABLE,
 ]
 
+# Quantidade de snapshots historicos mantidos em backups/history no GitHub.
+# Sem essa poda, cada backup automatico adiciona um arquivo novo para sempre,
+# fazendo o repositorio (e o clone/deploy) crescer indefinidamente.
+HISTORY_RETENTION_KEEP = 10
+
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
     "GITHUB_REPOSITORY": ["GITHUB_REPOSITORY", "github_repository", "repository", "repo"],
@@ -227,6 +232,51 @@ def _upload_bytes(settings: dict[str, Any], path: str, content: bytes, message: 
     return {}
 
 
+def _list_directory(settings: dict[str, Any], path: str) -> list[dict[str, Any]]:
+    url = _api_url(settings["repository"], path) + f"?ref={quote(settings['branch'])}"
+    try:
+        request = Request(url, method="GET")
+        request.add_header("Accept", "application/vnd.github+json")
+        request.add_header("Authorization", f"Bearer {settings['token']}")
+        request.add_header("X-GitHub-Api-Version", "2022-11-28")
+        with urlopen(request, timeout=30) as response:
+            raw = response.read()
+        result = json.loads(raw.decode("utf-8")) if raw else []
+        return result if isinstance(result, list) else []
+    except HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
+
+
+def _delete_file(settings: dict[str, Any], path: str, sha: str, message: str) -> None:
+    payload = {"message": message, "sha": sha, "branch": settings["branch"]}
+    _request_json("DELETE", _api_url(settings["repository"], path), settings["token"], payload)
+
+
+def prune_history(keep: int = HISTORY_RETENTION_KEEP) -> dict[str, Any]:
+    """Remove snapshots antigos de backups/history, mantendo apenas os `keep` mais recentes.
+
+    Os nomes dos arquivos comecam com timestamp (YYYYMMDD_HHMMSS), entao a
+    ordenacao alfabetica corresponde a ordenacao cronologica.
+    """
+    settings = github_settings()
+    if not github_backup_configured():
+        return {"status": "NAO_CONFIGURADO", "removidos": 0}
+    entries = _list_directory(settings, "backups/history")
+    files = sorted((item for item in entries if item.get("type") == "file"), key=lambda item: str(item.get("name") or ""))
+    excess = files[: max(len(files) - max(int(keep or 1), 1), 0)]
+    removed = 0
+    errors = 0
+    for item in excess:
+        try:
+            _delete_file(settings, str(item.get("path")), str(item.get("sha")), "Poda de historico de backup (retencao automatica)")
+            removed += 1
+        except Exception:
+            errors += 1
+    return {"status": "SUCESSO" if errors == 0 else "PARCIAL", "removidos": removed, "erros": errors, "restantes": len(files) - removed}
+
+
 def _github_http_error_message(exc: HTTPError) -> str:
     if exc.code == 401:
         return "GitHub recusou o token: token invalido, expirado ou sem acesso."
@@ -377,6 +427,10 @@ def backup_to_github(reason: str = "manual") -> dict[str, Any]:
         return {"status": "ERRO", "message": _github_http_error_message(exc), "records": 0}
     except (URLError, TimeoutError) as exc:
         return {"status": "ERRO", "message": str(exc), "records": 0}
+    try:
+        prune_history()
+    except Exception:
+        pass
     payload = json.loads(content.decode("utf-8"))
     return {"status": "SUCESSO", "message": f"Backup enviado para {settings['latest_path']}.", "records": sum(payload["records"].values())}
 

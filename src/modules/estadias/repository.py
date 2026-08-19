@@ -5,11 +5,27 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
+import streamlit as st
 
 from src.config.settings import DB_PATH
 from src.database.connection import get_connection, read_sql
 from src.modules.repository import latest_import_logs, table_count, table_exists
 from src.utils.timezone import brasilia_now_iso
+
+# TTL curto o suficiente para nao mostrar dados visivelmente desatualizados,
+# mas que evita reconsultar o banco a cada rerun do Streamlit (cliques,
+# digitacao em inputs, etc). Escritas (insert_rows/delete_by_hash/clear_*)
+# limpam o cache imediatamente, entao o TTL so importa em casos de restauracao
+# externa (ex.: restore do GitHub) fora do fluxo normal de escrita.
+_CACHE_TTL_SEGUNDOS = 20
+
+
+def _invalidate_read_cache() -> None:
+    """Chamado apos qualquer escrita para evitar exibir dados obsoletos."""
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
 
 
 CONTROL_ORIGINAL_TABLE = "mod_estadias_control_original"
@@ -62,6 +78,7 @@ def table_count_where(table: str, where_sql: str) -> int:
     return int(row[0] or 0) if row else 0
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def latest_logs(limit: int = 30) -> pd.DataFrame:
     return latest_import_logs(LOG_TABLE, limit)
 
@@ -94,6 +111,7 @@ def delete_by_hash(hash_arquivo: str, tipo_importacao: str) -> None:
     with get_connection() as conn:
         for table in tables:
             conn.execute(f"delete from {table} where hash_arquivo = ?", (hash_arquivo,))
+    _invalidate_read_cache()
 
 
 def clear_lcte_base() -> dict[str, int]:
@@ -140,6 +158,7 @@ def clear_lcte_base() -> dict[str, int]:
             ).fetchone()
             deleted[f"{LOG_TABLE}:LCTE_IPIRANGA"] = int(before[0] or 0) if before else 0
             conn.execute("delete from mod_estadias_logs_importacao where tipo_importacao = 'LCTE_IPIRANGA'")
+    _invalidate_read_cache()
     return deleted
 
 
@@ -184,6 +203,7 @@ def clear_estadias_imported_database() -> dict[str, int]:
             conn.execute(f"delete from {table}")
             if db_type != "postgres":
                 conn.execute("delete from sqlite_sequence where name = ?", (table,))
+    _invalidate_read_cache()
     return deleted
 
 
@@ -237,6 +257,7 @@ def clear_estadias_import_residues() -> dict[str, Any]:
         except Exception as exc:
             compact_message = f"Limpeza concluida, mas compactacao SQLite nao executada: {exc}"
 
+    _invalidate_read_cache()
     return {
         "deleted": deleted,
         "total_deleted": sum(deleted.values()),
@@ -322,6 +343,7 @@ def insert_rows(table: str, rows: list[dict[str, Any]], chunk_size: int = 1000) 
             chunk = rows[start : start + effective_chunk_size]
             values = [tuple(row.get(column) for column in columns) for row in chunk]
             conn.executemany(sql, values)
+    _invalidate_read_cache()
     return len(rows)
 
 
@@ -431,10 +453,12 @@ def count_rastreador_plates(placas_norm: list[str]) -> int:
     return int(row[0] or 0) if row else 0
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def sample(table: str, limit: int = 100) -> pd.DataFrame:
     return read_filtered(table, {}, limit)
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def arquivos_rastreador_importados(limit: int = 500) -> pd.DataFrame:
     if not table_exists(RASTREADOR_NORMALIZED_TABLE):
         return pd.DataFrame()
@@ -451,6 +475,7 @@ def arquivos_rastreador_importados(limit: int = 500) -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def placas_disponiveis() -> pd.DataFrame:
     rows = []
     for origem, table in [("LCTE", LCTE_NORMALIZED_TABLE), ("CONTROL", CONTROL_NORMALIZED_TABLE), ("RASTREADOR", RASTREADOR_NORMALIZED_TABLE)]:
@@ -459,6 +484,7 @@ def placas_disponiveis() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def read_cross(limit: int = 1000) -> pd.DataFrame:
     return read_filtered(CROSS_TABLE, {}, limit)
 
