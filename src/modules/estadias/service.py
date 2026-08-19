@@ -4,7 +4,7 @@ import json
 import math
 import re
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -14,6 +14,7 @@ from src.normalizers.fields import normalize_document_number, normalize_text
 
 STOP_WORDS = {"DE", "DA", "DO", "DAS", "DOS", "E", "A", "O", "AS", "OS", "EM", "NA", "NO", "KM", "ROD", "RODOVIA", "BASE"}
 PLATE_PATTERN = re.compile(r"[A-Z]{3}[0-9][A-Z0-9][0-9]{2}")
+ProgressCallback = Callable[[int, int, str], None]
 
 MOTIVOS = {
     "LCTE_SEM_PLACA": "Placa ausente ou invalida no LCTE.",
@@ -191,6 +192,15 @@ CROSS_DEFAULTS: dict[str, object] = {
     "diagnostico_json": "{}",
     "log_processamento_json": "[]",
 }
+
+
+def _emit_progress(progress_callback: ProgressCallback | None, current: int, total: int, message: str) -> None:
+    if not progress_callback:
+        return
+    try:
+        progress_callback(int(current), max(int(total), 1), message)
+    except Exception:
+        pass
 
 
 def _complete_row(row: dict[str, object]) -> dict[str, object]:
@@ -1413,9 +1423,12 @@ def top_indicators(limit: int = 10) -> dict[str, pd.DataFrame]:
     return result
 
 
-def build_cross_rows() -> list[dict[str, object]]:
+def build_cross_rows(progress_callback: ProgressCallback | None = None) -> list[dict[str, object]]:
+    _emit_progress(progress_callback, 1, 100, "Carregando viagens LCTE...")
     lcte = repository.read_lcte({}, 200000)
+    _emit_progress(progress_callback, 4, 100, "Carregando registros CONTROL...")
     control = repository.read_control({}, 300000)
+    _emit_progress(progress_callback, 7, 100, "Carregando parametros e configuracoes...")
     parametros = repository.read_parametros(10000)
     config = _read_config_values()
     min_stop = _config_number(config, "tempo_minimo_parado", 30)
@@ -1426,7 +1439,9 @@ def build_cross_rows() -> list[dict[str, object]]:
         conclusoes = {}
     rows: list[dict[str, object]] = []
     if lcte.empty:
+        _emit_progress(progress_callback, 100, 100, "Nenhuma viagem LCTE encontrada.")
         return rows
+    _emit_progress(progress_callback, 10, 100, f"Preparando cruzamento de {len(lcte)} viagem(ns)...")
     control_by_plate: dict[str, pd.DataFrame] = {}
     if not control.empty and "placa_norm" in control.columns:
         for plate_key, group in control.groupby(control["placa_norm"].fillna("").astype(str), dropna=False):
@@ -1434,7 +1449,9 @@ def build_cross_rows() -> list[dict[str, object]]:
     empty_control = control.iloc[0:0].copy() if not control.empty else pd.DataFrame()
     tracker_plate_counts: dict[str, int] = {}
 
-    for _, trip in lcte.iterrows():
+    total_trips = max(len(lcte), 1)
+    last_progress = -1
+    for trip_index, (_, trip) in enumerate(lcte.iterrows(), start=1):
         log: list[str] = ["LCTE: viagem mestre encontrada."]
         reason_codes: list[str] = []
         plate = str(trip.get("placa_norm") or "")
@@ -1761,13 +1778,21 @@ def build_cross_rows() -> list[dict[str, object]]:
                     }
                 )
             )
+        current_progress = 10 + int((trip_index / total_trips) * 80)
+        if current_progress != last_progress or trip_index == total_trips:
+            last_progress = current_progress
+            nf_label = str(trip.get("nf") or trip.get("cte") or "").strip() or "-"
+            _emit_progress(progress_callback, current_progress, 100, f"Processando viagem {trip_index}/{total_trips} - NF/CT-e {nf_label}")
+    _emit_progress(progress_callback, 90, 100, "Cruzamento calculado. Preparando gravacao...")
     return rows
 
 
-def atualizar_cruzamento(usuario: str) -> pd.DataFrame:
-    rows = build_cross_rows()
+def atualizar_cruzamento(usuario: str, progress_callback: ProgressCallback | None = None) -> pd.DataFrame:
+    rows = build_cross_rows(progress_callback)
+    _emit_progress(progress_callback, 95, 100, "Salvando resultado do cruzamento...")
     repository.replace_cross(rows, usuario)
     repository.registrar_auditoria(usuario, "PROCESSAR_ESTADIAS", valor_novo_json=json.dumps({"viagens": len(rows)}, ensure_ascii=False))
+    _emit_progress(progress_callback, 100, 100, "Atualizacao concluida.")
     return pd.DataFrame(rows)
 
 
@@ -1777,7 +1802,8 @@ def _row_signature(row: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
-def atualizar_cruzamento_incremental(usuario: str) -> tuple[pd.DataFrame, dict[str, int]]:
+def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCallback | None = None) -> tuple[pd.DataFrame, dict[str, int]]:
+    _emit_progress(progress_callback, 1, 100, "Lendo resultado anterior...")
     existing = repository.read_cross(300000)
     existing_by_lcte: dict[int, dict[str, Any]] = {}
     if not existing.empty and "lcte_id" in existing.columns:
@@ -1787,7 +1813,12 @@ def atualizar_cruzamento_incremental(usuario: str) -> tuple[pd.DataFrame, dict[s
             except Exception:
                 continue
 
-    recalculated_rows = build_cross_rows()
+    def build_progress(current: int, total: int, message: str) -> None:
+        mapped = 2 + int((current / max(total, 1)) * 86)
+        _emit_progress(progress_callback, mapped, 100, message)
+
+    recalculated_rows = build_cross_rows(build_progress)
+    _emit_progress(progress_callback, 89, 100, "Comparando registros novos e alterados...")
     rows: list[dict[str, Any]] = []
     new_count = 0
     changed_count = 0
@@ -1805,6 +1836,7 @@ def atualizar_cruzamento_incremental(usuario: str) -> tuple[pd.DataFrame, dict[s
             changed_count += 1
         rows.append(row)
 
+    _emit_progress(progress_callback, 95, 100, "Salvando resultado atualizado...")
     repository.replace_cross(rows, usuario)
     result = pd.DataFrame(rows)
     summary = {
@@ -1817,5 +1849,7 @@ def atualizar_cruzamento_incremental(usuario: str) -> tuple[pd.DataFrame, dict[s
         "concluidos_preservados": int(preserved_count),
         "erros": int(result.get("status_cruzamento", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ERRO").sum()) if not result.empty else 0,
     }
+    _emit_progress(progress_callback, 98, 100, "Registrando auditoria...")
     repository.registrar_auditoria(usuario, "ATUALIZAR_ESTADIAS_INCREMENTAL", valor_novo_json=json.dumps(summary, ensure_ascii=False))
+    _emit_progress(progress_callback, 100, 100, "Atualizacao concluida.")
     return result, summary

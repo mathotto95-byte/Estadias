@@ -1794,8 +1794,18 @@ def render_cross_page(usuario: str) -> None:
     col_title.title("CRUZAMENTO LCTE x CONTROL x RASTREADOR")
     lcte_count = table_count(LCTE_NORMALIZED_TABLE)
     if col_update.button("ATUALIZAR", type="primary", use_container_width=True, disabled=not lcte_count):
-        with st.spinner("Atualizando cruzamento..."):
-            cross_updated, resumo = atualizar_cruzamento_incremental(usuario)
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+
+        def update_progress(current: int, total: int, message: str) -> None:
+            pct = max(0, min(100, int(round((current / max(total, 1)) * 100))))
+            progress_bar.progress(pct)
+            progress_text.caption(f"{pct}% - {message}")
+
+        update_progress(0, 100, "Iniciando atualizacao...")
+        cross_updated, resumo = atualizar_cruzamento_incremental(usuario, update_progress)
+        progress_bar.progress(100)
+        progress_text.caption("100% - Atualizacao concluida.")
         st.success(
             "Atualizacao concluida: "
             f"{resumo['registros_novos']} registros novos, "
