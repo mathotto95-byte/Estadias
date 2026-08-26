@@ -23,6 +23,7 @@ MOTIVOS = {
     "LCTE_SEM_ORIGEM": "Origem ausente no LCTE.",
     "LCTE_SEM_DESTINO": "Destino ausente no LCTE.",
     "CONTROL_NAO_LOCALIZADO": "Nenhum registro correspondente encontrado no CONTROL.",
+    "CONTROL_DOCUMENTO_DIVERGENTE": "CONTROL encontrado para a placa, mas com NF/CT-e diferente da viagem LCTE.",
     "CONTROL_MULTIPLAS_CORRESPONDENCIAS": "Mais de um registro provavel encontrado no CONTROL.",
     "CONTROL_VIAGEM_EM_ANDAMENTO": "Viagem em andamento no CONTROL ou sem descarga informada.",
     "CONTROL_SEM_NF": "CONTROL sem NF; vinculo depende de placa, origem, destino e data.",
@@ -337,6 +338,13 @@ def _same_doc(row: pd.Series, trip: pd.Series) -> bool:
     return False
 
 
+def _control_has_document(row: pd.Series) -> bool:
+    for column in ["nf", "cte", "numero_documento", "pedido", "viagem"]:
+        if column in row.index and _doc_set(row.get(column)):
+            return True
+    return False
+
+
 def _trip_reference_datetime(trip: pd.Series) -> datetime | None:
     return _to_datetime(trip.get("data_hora_carga")) or _to_datetime(trip.get("data_emissao")) or _to_datetime(trip.get("data_operacao"))
 
@@ -403,9 +411,19 @@ def _select_control_matches(control: pd.DataFrame, trip: pd.Series, log: list[st
     log.append(f"CONTROL: {len(candidates)} candidato(s) pela(s) placa(s) {', '.join(plates) or '-'}")
     if candidates.empty:
         return candidates, 0, "NAO_RELACIONADO", {}, "CONTROL_NAO_LOCALIZADO"
-    trip_nfs = _doc_set(trip.get("nf"))
-    nf_candidates = candidates[candidates["nf"].fillna("").astype(str).map(lambda value: bool(trip_nfs.intersection(_doc_set(value))))] if trip_nfs and "nf" in candidates else pd.DataFrame()
-    log.append(f"CONTROL: {len(nf_candidates)} candidato(s) com NF em comum.")
+    documented_mask = candidates.apply(_control_has_document, axis=1)
+    doc_candidates = candidates[candidates.apply(lambda row: _same_doc(row, trip), axis=1)]
+    log.append(f"CONTROL: {len(doc_candidates)} candidato(s) com NF/CT-e em comum.")
+    if not doc_candidates.empty:
+        candidates = doc_candidates.copy()
+        log.append("CONTROL: candidatos restringidos pelo documento em comum.")
+    elif documented_mask.any():
+        candidates_without_doc = candidates[~documented_mask].copy()
+        if candidates_without_doc.empty:
+            log.append("CONTROL: registros da placa existem, mas todos possuem documento diferente do LCTE.")
+            return pd.DataFrame(), 0, "NAO_RELACIONADO", {}, "CONTROL_DOCUMENTO_DIVERGENTE"
+        candidates = candidates_without_doc
+        log.append("CONTROL: registros com documento divergente ignorados; avaliando apenas registros sem documento.")
     scored = []
     for idx, row in candidates.iterrows():
         score, criteria = _score_control_row(row, trip)
