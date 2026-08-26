@@ -644,7 +644,7 @@ def _municipality_blocks(df: pd.DataFrame, city: str, uf: str, config: dict[str,
     if ordered.empty:
         return [], pd.Series(dtype=bool)
     mask = _municipality_mask(ordered, city, uf)
-    stays = _stays_from_mask(ordered, mask, config)
+    stays = _stays_from_mask(ordered, mask, config, split_by_reference=True)
     for index, stay in enumerate(stays, start=1):
         block_rows = _municipality_block_rows(stay, ordered)
         stay["block_index"] = index
@@ -664,7 +664,7 @@ def _select_municipality_block(
         return None, "Sem registros no municipio dentro da janela da viagem."
     candidates = list(stays)
     if kind == "DESTINO" and after_dt:
-        candidates = [stay for stay in candidates if stay["arrival"] >= after_dt] or candidates
+        candidates = [stay for stay in candidates if stay["arrival"] > after_dt] or [stay for stay in candidates if stay["departure"] > after_dt]
     if not candidates:
         return None, "Sem bloco compativel com a sequencia da viagem."
     if len(candidates) > 1:
@@ -711,7 +711,8 @@ def _apply_special_municipality_stay(
         return reason_codes
     city, city_uf, label = special
     blocks, mask = _municipality_blocks(ordered, city, city_uf, config)
-    selected, choice_reason = _select_municipality_block(blocks, kind, _trip_reference_datetime(trip), after_dt)
+    reference_dt = after_dt if kind == "DESTINO" and after_dt else _trip_reference_datetime(trip)
+    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt)
     result[f"regra_especial_{prefix}"] = 1
     result[f"municipio_operacional_{prefix}"] = f"{label}/{city_uf}"
     result[f"metodo_localizacao_{prefix}"] = "municipio_uf_rastreador"
@@ -776,6 +777,7 @@ def _new_stay(current_dt: pd.Timestamp) -> dict[str, Any]:
         "arrival": current_dt.to_pydatetime(),
         "departure": current_dt.to_pydatetime(),
         "points": 0,
+        "reference_signature": "",
         "ignored_interruptions": 0,
         "oscillation_absorbed_min": 0.0,
         "max_temp_distance_m": 0.0,
@@ -880,8 +882,19 @@ def _stays_from_mask(
         if pd.isna(current_dt):
             continue
         if is_inside:
+            row_signature = _tracker_reference_signature(row) if split_by_reference else ""
             if current is None:
                 current = _new_stay(current_dt)
+                current["reference_signature"] = row_signature
+            elif split_by_reference and row_signature and current.get("reference_signature") and row_signature != current.get("reference_signature"):
+                if possible_exit_indexes:
+                    _absorb_possible_exit(current, ordered.loc[possible_exit_indexes], distances, current_dt)
+                    possible_exit_indexes = []
+                if current["points"] >= min_points:
+                    current["exit_reason"] = current.get("exit_reason") or "mudanca de referencia no mesmo municipio"
+                    stays.append(_finish_stay(current))
+                current = _new_stay(current_dt)
+                current["reference_signature"] = row_signature
             elif possible_exit_indexes:
                 outside_rows = ordered.loc[possible_exit_indexes]
                 _absorb_possible_exit(current, outside_rows, distances, current_dt)
@@ -996,7 +1009,7 @@ def _detect_trip_events(df: pd.DataFrame, trip: pd.Series, config: dict[str, str
     destination_mask = destino_stay_mask
     destination_distances = destino_distances
     if result["saida_origem"]:
-        destination_base = ordered[ordered["_data_dt"] >= pd.Timestamp(result["saida_origem"])]
+        destination_base = ordered[ordered["_data_dt"] > pd.Timestamp(result["saida_origem"])]
         destination_mask = destino_mask.reindex(destination_base.index, fill_value=False)
         destination_distances = destino_distances.reindex(destination_base.index)
     special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem")))
