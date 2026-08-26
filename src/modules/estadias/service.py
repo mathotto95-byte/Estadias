@@ -685,7 +685,7 @@ def _select_municipality_block(
     reference_dt: datetime | None,
     after_dt: datetime | None = None,
     trip: pd.Series | None = None,
-    used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None = None,
     min_stop_minutes: float = 0,
 ) -> tuple[dict[str, Any] | None, str]:
     if not stays:
@@ -727,7 +727,7 @@ def _apply_special_municipality_stay(
     log: list[str],
     kind: str,
     after_dt: datetime | None = None,
-    used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None = None,
 ) -> list[str]:
     reason_codes: list[str] = []
     if kind == "ORIGEM":
@@ -904,20 +904,21 @@ def _finish_stay(stay: dict[str, Any]) -> dict[str, Any]:
     return stay
 
 
-def _stay_usage_key(trip: pd.Series, kind: str, stay: dict[str, Any]) -> tuple[str, str, str, str]:
+def _stay_usage_key(trip: pd.Series, kind: str, stay: dict[str, Any]) -> tuple[str, str, str, str, str]:
     plate = _trip_primary_plate(trip)
+    location = normalize_text(trip.get("origem") if kind == "ORIGEM" else trip.get("destino"))
     arrival = stay.get("arrival")
     departure = stay.get("departure")
     arrival_text = arrival.isoformat(sep=" ", timespec="minutes") if hasattr(arrival, "isoformat") else str(arrival or "")
     departure_text = departure.isoformat(sep=" ", timespec="minutes") if hasattr(departure, "isoformat") else str(departure or "")
-    return plate, "PERMANENCIA", arrival_text, departure_text
+    return plate, kind, location, arrival_text, departure_text
 
 
 def _available_stays(
     stays: list[dict[str, Any]],
     trip: pd.Series,
     kind: str,
-    used_tracker_stays: set[tuple[str, str, str, str]] | None,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None,
 ) -> list[dict[str, Any]]:
     if not used_tracker_stays:
         return stays
@@ -928,7 +929,7 @@ def _mark_stay_used(
     trip: pd.Series,
     kind: str,
     stay: dict[str, Any],
-    used_tracker_stays: set[tuple[str, str, str, str]] | None,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None,
 ) -> None:
     if used_tracker_stays is not None:
         used_tracker_stays.add(_stay_usage_key(trip, kind, stay))
@@ -1002,7 +1003,7 @@ def _detect_trip_events(
     trip: pd.Series,
     config: dict[str, str],
     log: list[str],
-    used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "chegada_origem": None,
@@ -1632,7 +1633,7 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
     empty_control = control.iloc[0:0].copy() if not control.empty else pd.DataFrame()
     tracker_plate_counts: dict[str, int] = {}
     used_control_ids: set[int] = set()
-    used_tracker_stays: set[tuple[str, str, str, str]] = set()
+    used_tracker_stays: set[tuple[str, str, str, str, str]] = set()
     trip_neighbors_base = lcte if not plate_filter else _filter_lcte_by_plate(lcte_base, plate_filter)[0]
     trip_neighbors = _trip_neighbors_by_plate(trip_neighbors_base)
     processing_lcte = lcte.copy()
