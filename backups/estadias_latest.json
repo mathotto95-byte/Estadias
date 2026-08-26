@@ -1,12 +1,12 @@
 {
   "schema": "estadias_backup_v1",
-  "generated_at": "2026-08-26T15:53:35",
+  "generated_at": "2026-08-26T16:18:51",
   "records": {
     "mod_estadias_cruzamento_inicial": 524,
     "mod_estadias_conclusoes": 0,
     "mod_estadias_auditoria": 9,
     "mod_estadias_historico_status": 0,
-    "mod_estadias_configuracoes": 22,
+    "mod_estadias_configuracoes": 23,
     "mod_estadias_locais_operacionais": 0,
     "mod_estadias_parametros_cliente": 0,
     "mod_estadias_preferencias_colunas": 0
@@ -76804,6 +76804,14 @@
         "chave": "limite_agendamento_minutos",
         "valor": "",
         "descricao": "Limite operacional para diferenca de agendamento.",
+        "updated_at": "",
+        "updated_by": "sistema"
+      },
+      {
+        "id": 3102,
+        "chave": "tolerancia_retorno_referencia_minutos",
+        "valor": "",
+        "descricao": "Tempo maximo fora do municipio/cliente referencia antes de encerrar o bloco.",
         "updated_at": "",
         "updated_by": "sistema"
       }
