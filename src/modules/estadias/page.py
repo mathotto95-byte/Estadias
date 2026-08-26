@@ -1790,10 +1790,14 @@ def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
 
 
 def render_cross_page(usuario: str) -> None:
-    col_title, col_update = st.columns([3, 1])
+    col_title, col_plate, col_update = st.columns([2.2, 1.2, 1])
     col_title.title("CRUZAMENTO LCTE x CONTROL x RASTREADOR")
     lcte_count = table_count(LCTE_NORMALIZED_TABLE)
-    if col_update.button("ATUALIZAR", type="primary", use_container_width=True, disabled=not lcte_count):
+    plate_options = ["TODAS", *select_distinct(LCTE_NORMALIZED_TABLE, "placa_norm", 3000)]
+    plate_update = col_plate.selectbox("Atualizar placa", plate_options, key="estadias_cross_update_placa")
+    selected_plate = "" if plate_update == "TODAS" else str(plate_update or "").strip()
+    button_label = "ATUALIZAR PLACA" if selected_plate else "ATUALIZAR TODAS"
+    if col_update.button(button_label, type="primary", use_container_width=True, disabled=not lcte_count):
         progress_bar = st.progress(0)
         progress_text = st.empty()
 
@@ -1803,11 +1807,12 @@ def render_cross_page(usuario: str) -> None:
             progress_text.caption(f"{pct}% - {message}")
 
         update_progress(0, 100, "Iniciando atualizacao...")
-        cross_updated, resumo = atualizar_cruzamento_incremental(usuario, update_progress)
+        cross_updated, resumo = atualizar_cruzamento_incremental(usuario, update_progress, selected_plate)
         progress_bar.progress(100)
         progress_text.caption("100% - Atualizacao concluida.")
+        scope = f"Placa {selected_plate}: " if selected_plate else ""
         st.success(
-            "Atualizacao concluida: "
+            f"{scope}Atualizacao concluida: "
             f"{resumo['registros_novos']} registros novos, "
             f"{resumo['estadias_identificadas']} estadias, "
             f"{resumo['pendencias']} pendencias, "
