@@ -1344,19 +1344,13 @@ def _format_hhmm(value: object) -> str:
     return f"{hours:02d}:{mins:02d}"
 
 
-def _status_estadia_from_minutes(tracker_minutes: float | None, control_minutes: float | None) -> tuple[str, str]:
+def _status_estadia_from_minutes(tracker_minutes: float | None, estadia_minutes: object = None) -> tuple[str, str]:
     tracker_has = tracker_minutes is not None
-    control_has = control_minutes is not None
-    tracker_estadia = tracker_has and float(tracker_minutes) > 1440
-    control_estadia = control_has and float(control_minutes) > 1440
-    if tracker_estadia and control_estadia:
-        return "ESTADIA", "RASTREADOR E CONTROL"
-    if tracker_estadia:
+    estadia_value = pd.to_numeric(pd.Series([estadia_minutes]), errors="coerce").fillna(0).iloc[0]
+    if tracker_has and float(estadia_value) > 0:
         return "ESTADIA", "RASTREADOR"
-    if control_estadia:
-        return "ESTADIA", "CONTROL"
-    if tracker_has or control_has:
-        return "SEM ESTADIA", "NENHUMA"
+    if tracker_has:
+        return "SEM ESTADIA", "RASTREADOR"
     return "PENDENTE", "SEM DADOS"
 
 
@@ -1407,8 +1401,6 @@ def _line_reason(row: pd.Series, tipo: str, status: str, diff_value: float | Non
     if status == "CONCLUIDO":
         return "Concluido"
     found_col = "encontrou_origem" if tipo == "ORIGEM" else "encontrou_destino"
-    control_start = row.get("control_chegada_origem") if tipo == "ORIGEM" else row.get("control_chegada_destino")
-    control_end = row.get("control_saida_origem") if tipo == "ORIGEM" else row.get("control_saida_destino")
     tracker_start = row.get("chegada_origem") if tipo == "ORIGEM" else row.get("chegada_destino")
     tracker_end = row.get("saida_origem") if tipo == "ORIGEM" else row.get("saida_destino")
     failure = str(row.get("motivo_falha") or "")
@@ -1420,10 +1412,6 @@ def _line_reason(row: pd.Series, tipo: str, status: str, diff_value: float | Non
         return "Rastreador sem chegada"
     if not str(tracker_end or "").strip():
         return "Rastreador sem saida"
-    if not str(control_start or "").strip() or not str(control_end or "").strip():
-        return "Control sem horario"
-    if diff_value is not None and diff_value > float(row.get("tolerancia_control_rastreador_min") or 30):
-        return f"Divergencia de {int(round(diff_value))} minutos"
     if "MULTIPLAS_PERMANENCIAS_MUNICIPIO" in failure:
         return "Multiplas permanencias"
     special_col = "regra_especial_origem" if tipo == "ORIGEM" else "regra_especial_destino"
@@ -1432,7 +1420,7 @@ def _line_reason(row: pd.Series, tipo: str, status: str, diff_value: float | Non
         city = str(row.get(city_col) or "Municipio").split("/", 1)[0]
         return f"{city} pelo municipio"
     if status == "ESTADIA":
-        return "Dentro da tolerancia"
+        return "Estadia pelo rastreador"
     if "FRANQUIA_NAO_ULTRAPASSADA" in failure:
         return "Permanencia inferior a franquia"
     if "GPS" in failure.upper():
@@ -1533,7 +1521,8 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
             status = _line_status(row, tipo)
             tracker_minutes = _line_tracker_minutes(row, tipo)
             control_minutes = _line_control_minutes(row, tipo)
-            status_estadia, fonte_status_estadia = _status_estadia_from_minutes(tracker_minutes, control_minutes)
+            stay_minutes = row.get("estadia_carga_min") if tipo == "ORIGEM" else row.get("estadia_descarga_min")
+            status_estadia, fonte_status_estadia = _status_estadia_from_minutes(tracker_minutes, stay_minutes)
             encontrou_control = _safe_int_value(row.get("encontrou_control"))
             encontrou_rastreador = _safe_int_value(row.get("encontrou_rastreador"))
             rows.append(
