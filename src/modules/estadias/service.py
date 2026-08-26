@@ -494,7 +494,10 @@ def _tracker_window_bounds(
         start = previous_trip_dt
         log.append("RASTREADOR: inicio da janela limitado pela viagem LCTE anterior da mesma placa.")
     if end and next_trip_dt and end > next_trip_dt:
-        end = next_trip_dt
+        limited_end = next_trip_dt - timedelta(minutes=1)
+        if start and limited_end <= start:
+            limited_end = next_trip_dt
+        end = limited_end
         log.append("RASTREADOR: fim da janela limitado pela proxima viagem LCTE da mesma placa.")
     return start, end, source
 
@@ -1110,7 +1113,7 @@ def _detect_trip_events(
             log.append("RASTREADOR: todos os blocos de destino compativeis ja foram vinculados a outra viagem LCTE.")
         dest_stays = available_dest_stays
     if dest_stays and not result["encontrou_destino"]:
-        dest = max(dest_stays, key=lambda stay: (float(stay.get("minutes") or 0), int(stay.get("points") or 0)))
+        dest = min(dest_stays, key=lambda stay: stay["arrival"])
         _mark_stay_used(trip, "DESTINO", dest, used_tracker_stays)
         result.update(
             {
