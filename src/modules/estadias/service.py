@@ -474,22 +474,10 @@ def _tracker_window_bounds(
 ) -> tuple[datetime | None, datetime | None, str]:
     lcte_start, lcte_end, source = _date_window(trip, config)
     start, end = lcte_start, lcte_end
-    if control_matches.empty:
-        if start and end:
-            log.append("RASTREADOR: janela definida pelo LCTE porque nao houve CONTROL confirmado.")
-        else:
-            log.append("RASTREADOR: LCTE sem data valida para definir janela.")
+    if start and end:
+        log.append("RASTREADOR: janela definida pelo LCTE; CONTROL usado apenas como informacao.")
     else:
-        control_start = _to_datetime(control_matches.iloc[0].get("data_hora_inicio")) or _to_datetime(control_matches.iloc[0].get("data_inicio"))
-        control_end = _to_datetime(control_matches.iloc[0].get("data_hora_fim")) or _to_datetime(control_matches.iloc[0].get("data_fim"))
-        hours_before = _config_number(config, "janela_control_horas_antes", 12)
-        hours_after = _config_number(config, "janela_control_horas_depois", 24)
-        if control_start:
-            start = control_start - timedelta(hours=max(hours_before, 0))
-        if control_end:
-            end = control_end + timedelta(hours=max(hours_after, 0))
-        source = "CONTROL_OPERACIONAL"
-        log.append("RASTREADOR: janela definida pelo CONTROL como referencia operacional, sem presumir chegada ou saida.")
+        log.append("RASTREADOR: LCTE sem data valida para definir janela.")
     if start and previous_trip_dt and start < previous_trip_dt:
         start = previous_trip_dt
         log.append("RASTREADOR: inicio da janela limitado pela viagem LCTE anterior da mesma placa.")
@@ -698,7 +686,7 @@ def _select_municipality_block(
     after_dt: datetime | None = None,
     trip: pd.Series | None = None,
     used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
-    control_events: dict[str, datetime | None] | None = None,
+    min_stop_minutes: float = 0,
 ) -> tuple[dict[str, Any] | None, str]:
     if not stays:
         return None, "Sem registros no municipio dentro da janela da viagem."
@@ -712,13 +700,18 @@ def _select_municipality_block(
         if not available:
             return None, "Bloco de permanencia ja vinculado a outra viagem LCTE."
         candidates = available
+    ignored_short = 0
+    if kind == "DESTINO" and min_stop_minutes > 0 and len(candidates) > 1:
+        significant = [stay for stay in candidates if float(stay.get("minutes") or 0) >= min_stop_minutes]
+        if significant:
+            ignored_short = len(candidates) - len(significant)
+            candidates = significant
     if len(candidates) > 1:
         reason = "Multiplas permanencias no municipio - necessita verificacao."
     else:
         reason = "Bloco unico compativel com a viagem."
-    if control_events:
-        selected, operational_reason = _select_stay_by_operational_reference(candidates, kind, control_events)
-        return selected, f"{reason} {operational_reason}."
+    if ignored_short:
+        reason = f"{reason} Permanencia(s) curta(s) ignorada(s) por tempo inferior ao minimo."
     if reference_dt:
         selected = min(candidates, key=lambda stay: abs((stay["arrival"] - reference_dt).total_seconds()))
     else:
@@ -735,7 +728,6 @@ def _apply_special_municipality_stay(
     kind: str,
     after_dt: datetime | None = None,
     used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
-    control_events: dict[str, datetime | None] | None = None,
 ) -> list[str]:
     reason_codes: list[str] = []
     if kind == "ORIGEM":
@@ -762,7 +754,8 @@ def _apply_special_municipality_stay(
     city, city_uf, label = special
     blocks, mask = _municipality_blocks(ordered, city, city_uf, config)
     reference_dt = after_dt if kind == "DESTINO" and after_dt else _trip_reference_datetime(trip)
-    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt, trip, used_tracker_stays, control_events)
+    min_stop_minutes = _config_number(config, "tempo_minimo_parado", 30)
+    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt, trip, used_tracker_stays, min_stop_minutes)
     result[f"regra_especial_{prefix}"] = 1
     result[f"municipio_operacional_{prefix}"] = f"{label}/{city_uf}"
     result[f"metodo_localizacao_{prefix}"] = "municipio_uf_rastreador"
@@ -941,50 +934,6 @@ def _mark_stay_used(
         used_tracker_stays.add(_stay_usage_key(trip, kind, stay))
 
 
-def _select_stay_by_operational_reference(
-    stays: list[dict[str, Any]],
-    kind: str,
-    control_events: dict[str, datetime | None] | None = None,
-) -> tuple[dict[str, Any], str]:
-    if not stays:
-        raise ValueError("stays vazio")
-    ordered = sorted(stays, key=lambda stay: stay["arrival"])
-    control_events = control_events or {}
-    if kind == "ORIGEM":
-        control_start = control_events.get("control_chegada_origem")
-        control_end = control_events.get("control_saida_origem")
-    else:
-        control_start = control_events.get("control_chegada_destino")
-        control_end = control_events.get("control_saida_destino")
-
-    if control_start and control_end:
-        overlapping = [
-            stay
-            for stay in ordered
-            if stay["arrival"] <= control_end and stay["departure"] >= control_start
-        ]
-        if overlapping:
-            selected = max(
-                overlapping,
-                key=lambda stay: (
-                    min(stay["departure"], control_end) - max(stay["arrival"], control_start)
-                ).total_seconds(),
-            )
-            return selected, "bloco sobreposto ao horario operacional do CONTROL"
-
-    if control_start:
-        after_start = [stay for stay in ordered if stay["departure"] >= control_start]
-        if after_start:
-            return after_start[0], "primeiro bloco compativel com o inicio operacional do CONTROL"
-
-    if control_end:
-        before_end = [stay for stay in ordered if stay["arrival"] <= control_end]
-        if before_end:
-            return before_end[-1], "ultimo bloco compativel com o fim operacional do CONTROL"
-
-    return ordered[0], "primeiro bloco na sequencia da viagem"
-
-
 def _stays_from_mask(
     df: pd.DataFrame,
     mask: pd.Series,
@@ -1054,7 +1003,6 @@ def _detect_trip_events(
     config: dict[str, str],
     log: list[str],
     used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
-    control_events: dict[str, datetime | None] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "chegada_origem": None,
@@ -1101,7 +1049,7 @@ def _detect_trip_events(
         return result
 
     special_reasons: list[str] = []
-    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM", used_tracker_stays=used_tracker_stays, control_events=control_events))
+    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM", used_tracker_stays=used_tracker_stays))
     origem_mask = _location_mask_with_geo(ordered, str(trip.get("origem") or ""), trip.get("latitude_origem"), trip.get("longitude_origem"), config)
     destino_mask = _location_mask_with_geo(ordered, str(trip.get("destino") or ""), trip.get("latitude_destino"), trip.get("longitude_destino"), config)
     origem_distances = _distance_series_meters(ordered, trip.get("latitude_origem"), trip.get("longitude_origem"))
@@ -1126,7 +1074,7 @@ def _detect_trip_events(
             log.append("RASTREADOR: todos os blocos de origem compativeis ja foram vinculados a outra viagem LCTE.")
         origin_stays = available_origin_stays
     if origin_stays and not result["encontrou_origem"]:
-        origin, origin_choice_reason = _select_stay_by_operational_reference(origin_stays, "ORIGEM", control_events)
+        origin = origin_stays[0]
         _mark_stay_used(trip, "ORIGEM", origin, used_tracker_stays)
         result.update(
             {
@@ -1144,7 +1092,7 @@ def _detect_trip_events(
         )
         log.append(
             f"RASTREADOR: origem identificada em bloco continuo com {origin['points']} ponto(s), "
-            f"{origin.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); {origin_choice_reason}."
+            f"{origin.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); primeiro bloco na sequencia LCTE x RASTREADOR."
         )
 
     destination_base = ordered
@@ -1154,7 +1102,7 @@ def _detect_trip_events(
         destination_base = ordered[ordered["_data_dt"] > pd.Timestamp(result["saida_origem"])]
         destination_mask = destino_mask.reindex(destination_base.index, fill_value=False)
         destination_distances = destino_distances.reindex(destination_base.index)
-    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem"), used_tracker_stays, control_events))
+    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem"), used_tracker_stays))
     dest_stays = [] if result["regra_especial_destino"] else _stays_from_mask(destination_base, destination_mask, config, split_by_reference=split_destination_by_reference, distance_meters=destination_distances)
     if dest_stays and not result["regra_especial_destino"]:
         available_dest_stays = _available_stays(dest_stays, trip, "DESTINO", used_tracker_stays)
@@ -1163,7 +1111,10 @@ def _detect_trip_events(
             log.append("RASTREADOR: todos os blocos de destino compativeis ja foram vinculados a outra viagem LCTE.")
         dest_stays = available_dest_stays
     if dest_stays and not result["encontrou_destino"]:
-        dest, dest_choice_reason = _select_stay_by_operational_reference(dest_stays, "DESTINO", control_events)
+        min_stop_minutes = _config_number(config, "tempo_minimo_parado", 30)
+        significant_dest_stays = [stay for stay in dest_stays if float(stay.get("minutes") or 0) >= min_stop_minutes]
+        dest_candidates = significant_dest_stays or dest_stays
+        dest = min(dest_candidates, key=lambda stay: stay["arrival"])
         _mark_stay_used(trip, "DESTINO", dest, used_tracker_stays)
         result.update(
             {
@@ -1181,8 +1132,10 @@ def _detect_trip_events(
         )
         log.append(
             f"RASTREADOR: destino identificado depois da origem em bloco continuo com {dest['points']} ponto(s), "
-            f"{dest.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); {dest_choice_reason}."
+            f"{dest.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); primeiro bloco de destino depois da origem."
         )
+        if significant_dest_stays and len(significant_dest_stays) != len(dest_stays):
+            log.append("RASTREADOR: passagem curta no destino ignorada por permanencia inferior ao minimo configurado.")
     elif not result["encontrou_origem"]:
         log.append("RASTREADOR: destino nao foi fechado porque a origem nao iniciou a sequencia.")
     result["codigos_motivo_especial"] = special_reasons
@@ -1297,15 +1250,12 @@ def _compare_control_tracker_events(
 def _start_reference_datetime(
     chegada_origem: datetime | None,
     saida_origem: datetime | None,
-    control_events: dict[str, datetime | None],
     trip: pd.Series,
 ) -> tuple[datetime | None, str]:
     if saida_origem:
         return saida_origem, "RASTREADOR_SAIDA_ORIGEM"
     if chegada_origem:
         return chegada_origem, "RASTREADOR_CHEGADA_ORIGEM"
-    if control_events.get("control_chegada_origem"):
-        return control_events["control_chegada_origem"], "CONTROL_DT_CARGA"
     control_start = _to_datetime(trip.get("data_hora_carga")) or _to_datetime(trip.get("data_operacao"))
     if control_start:
         return control_start, "LCTE_DATA_EMISSAO"
@@ -1375,27 +1325,25 @@ def _classify_panel(
     control_matches: pd.DataFrame,
     tracker_matches: pd.DataFrame,
 ) -> dict[str, Any]:
-    reason_text = " ".join(reason_codes)
-    has_control = not control_matches.empty
+    operational_reason_codes = [
+        str(code)
+        for code in reason_codes
+        if not str(code).startswith("CONTROL_")
+        and str(code) not in {"DIVERGENCIA_CONTROL_RASTREADOR", "VINCULO_AGUARDANDO_REVISAO"}
+    ]
+    reason_text = " ".join(operational_reason_codes)
     has_tracker = not tracker_matches.empty
     needs_verification = False
     verification_reasons: list[str] = []
-    if not has_control:
-        needs_verification = True
-        verification_reasons.append("SEM_CONTROL")
     if not has_tracker:
         needs_verification = True
         verification_reasons.append("SEM_RASTREADOR")
-    if comparison.get("eventos_sem_control", 0):
-        needs_verification = True
-        verification_reasons.append("CONTROL_INCOMPLETO")
     if comparison.get("eventos_sem_rastreador", 0):
         needs_verification = True
         verification_reasons.append("RASTREADOR_INCOMPLETO")
     if comparison.get("eventos_comparaveis", 0) and not int(comparison.get("dentro_tolerancia_control_rastreador") or 0):
-        needs_verification = True
-        verification_reasons.append("DIVERGENCIA_ACIMA_TOLERANCIA")
-    if any(token in reason_text for token in ["MULTIPLAS", "REVISAO", "SEM_COORDENADAS", "SOBREPOSTA", "ERRO"]):
+        verification_reasons.append("DIVERGENCIA_CONTROL_INFORMATIVA")
+    if any(token in reason_text for token in ["MULTIPLAS", "SEM_COORDENADAS", "SOBREPOSTA", "ERRO"]):
         needs_verification = True
         verification_reasons.append("VALIDACAO_MANUAL")
     if calculou and elegivel and not needs_verification:
@@ -1406,7 +1354,7 @@ def _classify_panel(
         status_cte = "Em verificacao"
     elif not calculou and needs_verification:
         painel = "VERIFICACAO"
-        status_cte = "Rastreador incompleto" if has_control else "Control incompleto"
+        status_cte = "Rastreador incompleto"
     else:
         painel = "SOMENTE_LCTE"
         status_cte = "Sem estadia"
@@ -1742,7 +1690,7 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
             elif tracker_matches.get("_data_dt", pd.Series(dtype=object)).isna().all():
                 reason_codes.append("RASTREADOR_DATA_INVALIDA")
 
-            tracker_events = _detect_trip_events(tracker_matches, trip, config, log, used_tracker_stays, control_events)
+            tracker_events = _detect_trip_events(tracker_matches, trip, config, log, used_tracker_stays)
             for special_reason in tracker_events.get("codigos_motivo_especial", []):
                 if special_reason:
                     reason_codes.append(str(special_reason))
@@ -1751,22 +1699,12 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
             tempo_origem = tracker_events["tempo_origem"]
             encontrou_origem = tracker_events["encontrou_origem"]
             pontos_origem = tracker_events["pontos_origem"]
-            if not encontrou_origem:
-                chegada_origem, saida_origem, tempo_origem, encontrou_origem = _duration_from_control(control_matches, str(trip.get("origem") or ""), "CARGA")
-                pontos_origem = 0
-                if encontrou_origem:
-                    log.append("Origem calculada por CONTROL por ausencia de ponto rastreador compativel.")
 
             chegada_destino = tracker_events["chegada_destino"]
             saida_destino = tracker_events["saida_destino"]
             tempo_destino = tracker_events["tempo_destino"]
             encontrou_destino = tracker_events["encontrou_destino"]
             pontos_destino = tracker_events["pontos_destino"]
-            if not encontrou_destino:
-                chegada_destino, saida_destino, tempo_destino, encontrou_destino = _duration_from_control(control_matches, str(trip.get("destino") or ""), "DESCARGA")
-                pontos_destino = 0
-                if encontrou_destino:
-                    log.append("Destino calculado por CONTROL por ausencia de ponto rastreador compativel.")
 
             if not encontrou_origem:
                 reason_codes.append("ORIGEM_NAO_VISITADA")
@@ -1783,11 +1721,9 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
                 control_events,
                 tolerance_control_tracker,
             )
-            if comparison.get("eventos_comparaveis", 0) and not int(comparison.get("dentro_tolerancia_control_rastreador") or 0):
-                reason_codes.append("DIVERGENCIA_CONTROL_RASTREADOR")
 
             tempo_operacional = _minutes(tempo_origem + tempo_destino)
-            data_inicio_ref, fonte_inicio_ref = _start_reference_datetime(chegada_origem, saida_origem, control_events, trip)
+            data_inicio_ref, fonte_inicio_ref = _start_reference_datetime(chegada_origem, saida_origem, trip)
             first_dt = data_inicio_ref or chegada_origem or _to_datetime(trip.get("data_hora_carga")) or _to_datetime(trip.get("data_operacao"))
             last_dt = saida_destino or (tracker_matches["_data_dt"].max().to_pydatetime() if not tracker_matches.empty and tracker_matches["_data_dt"].notna().any() else None)
             tempo_total = _minutes((last_dt - first_dt).total_seconds() / 60) if first_dt and last_dt and last_dt >= first_dt else 0
@@ -1828,9 +1764,16 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
             status = "ESTADIA_CALCULADA" if calculou else "NAO_CALCULADA"
             status_control = control_class if not control_matches.empty else "NAO_LOCALIZADO"
             status_rastreador = "LOCALIZADO" if not tracker_matches.empty else "NAO_LOCALIZADO"
-            code, description = _main_reason(list(dict.fromkeys(reason_codes)))
+            unique_reason_codes = list(dict.fromkeys(reason_codes))
+            operational_reason_codes = [
+                str(reason)
+                for reason in unique_reason_codes
+                if not str(reason).startswith("CONTROL_")
+                and str(reason) not in {"DIVERGENCIA_CONTROL_RASTREADOR", "VINCULO_AGUARDANDO_REVISAO"}
+            ]
+            code, description = _main_reason(operational_reason_codes or unique_reason_codes)
             motivo_nao_elegibilidade = "" if elegivel else description
-            workflow = _classify_panel(calculou, elegivel, comparison, list(dict.fromkeys(reason_codes)), control_matches, tracker_matches)
+            workflow = _classify_panel(calculou, elegivel, comparison, unique_reason_codes, control_matches, tracker_matches)
 
             diagnostic = {
                 "Viagem criada pelo LCTE": True,
