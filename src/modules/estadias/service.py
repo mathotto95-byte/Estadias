@@ -24,10 +24,12 @@ MOTIVOS = {
     "LCTE_SEM_DESTINO": "Destino ausente no LCTE.",
     "CONTROL_NAO_LOCALIZADO": "Nenhum registro correspondente encontrado no CONTROL.",
     "CONTROL_DOCUMENTO_DIVERGENTE": "CONTROL encontrado para a placa, mas com NF/CT-e diferente da viagem LCTE.",
+    "CONTROL_JA_UTILIZADO": "Registro CONTROL ja vinculado a outra viagem LCTE da mesma placa.",
     "CONTROL_MULTIPLAS_CORRESPONDENCIAS": "Mais de um registro provavel encontrado no CONTROL.",
     "CONTROL_VIAGEM_EM_ANDAMENTO": "Viagem em andamento no CONTROL ou sem descarga informada.",
     "CONTROL_SEM_NF": "CONTROL sem NF; vinculo depende de placa, origem, destino e data.",
     "RASTREADOR_SEM_REGISTROS": "Nenhum registro de rastreador localizado na janela da viagem.",
+    "RASTREADOR_PERMANENCIA_JA_UTILIZADA": "Bloco de permanencia do rastreador ja vinculado a outra viagem LCTE da mesma placa.",
     "RASTREADOR_DATA_INVALIDA": "Registros do rastreador sem data/hora valida.",
     "ORIGEM_SEM_COORDENADAS": "Origem sem coordenadas cadastradas.",
     "DESTINO_SEM_COORDENADAS": "Destino sem coordenadas cadastradas.",
@@ -349,6 +351,12 @@ def _trip_reference_datetime(trip: pd.Series) -> datetime | None:
     return _to_datetime(trip.get("data_hora_carga")) or _to_datetime(trip.get("data_emissao")) or _to_datetime(trip.get("data_operacao"))
 
 
+def _trip_primary_plate(trip: pd.Series | dict[str, Any]) -> str:
+    if isinstance(trip, pd.Series):
+        return _normalize_plate_candidate(trip.get("placa_norm"))
+    return _normalize_plate_candidate(trip.get("placa_norm"))
+
+
 def _date_window(trip: pd.Series, config: dict[str, str]) -> tuple[datetime | None, datetime | None, str]:
     base = _trip_reference_datetime(trip)
     if not base:
@@ -403,7 +411,12 @@ def _classify_score(score: float) -> str:
     return "NAO_RELACIONADO"
 
 
-def _select_control_matches(control: pd.DataFrame, trip: pd.Series, log: list[str]) -> tuple[pd.DataFrame, float, str, dict[str, Any], str]:
+def _select_control_matches(
+    control: pd.DataFrame,
+    trip: pd.Series,
+    log: list[str],
+    used_control_ids: set[int] | None = None,
+) -> tuple[pd.DataFrame, float, str, dict[str, Any], str]:
     if control.empty:
         return pd.DataFrame(), 0, "NAO_RELACIONADO", {}, "CONTROL_NAO_LOCALIZADO"
     plates = _trip_plate_candidates(trip)
@@ -411,6 +424,15 @@ def _select_control_matches(control: pd.DataFrame, trip: pd.Series, log: list[st
     log.append(f"CONTROL: {len(candidates)} candidato(s) pela(s) placa(s) {', '.join(plates) or '-'}")
     if candidates.empty:
         return candidates, 0, "NAO_RELACIONADO", {}, "CONTROL_NAO_LOCALIZADO"
+    if used_control_ids and "id" in candidates.columns:
+        before_used_filter = len(candidates)
+        control_ids = pd.to_numeric(candidates["id"], errors="coerce").fillna(0).astype(int)
+        candidates = candidates[~control_ids.isin(used_control_ids)].copy()
+        removed = before_used_filter - len(candidates)
+        if removed:
+            log.append(f"CONTROL: {removed} candidato(s) ignorado(s) por ja estarem vinculados a outra viagem.")
+        if candidates.empty:
+            return pd.DataFrame(), 0, "NAO_RELACIONADO", {}, "CONTROL_JA_UTILIZADO"
     documented_mask = candidates.apply(_control_has_document, axis=1)
     doc_candidates = candidates[candidates.apply(lambda row: _same_doc(row, trip), axis=1)]
     log.append(f"CONTROL: {len(doc_candidates)} candidato(s) com NF/CT-e em comum.")
@@ -447,6 +469,8 @@ def _tracker_window_bounds(
     control_matches: pd.DataFrame,
     config: dict[str, str],
     log: list[str],
+    previous_trip_dt: datetime | None = None,
+    next_trip_dt: datetime | None = None,
 ) -> tuple[datetime | None, datetime | None, str]:
     lcte_start, lcte_end, source = _date_window(trip, config)
     start, end = lcte_start, lcte_end
@@ -466,6 +490,12 @@ def _tracker_window_bounds(
             end = control_end + timedelta(hours=max(hours_after, 0))
         source = "CONTROL_OPERACIONAL"
         log.append("RASTREADOR: janela definida pelo CONTROL como referencia operacional, sem presumir chegada ou saida.")
+    if start and previous_trip_dt and start < previous_trip_dt:
+        start = previous_trip_dt
+        log.append("RASTREADOR: inicio da janela limitado pela viagem LCTE anterior da mesma placa.")
+    if end and next_trip_dt and end > next_trip_dt:
+        end = next_trip_dt
+        log.append("RASTREADOR: fim da janela limitado pela proxima viagem LCTE da mesma placa.")
     return start, end, source
 
 
@@ -479,13 +509,15 @@ def _filter_tracker_for_trip(
     control_matches: pd.DataFrame,
     config: dict[str, str],
     log: list[str],
+    previous_trip_dt: datetime | None = None,
+    next_trip_dt: datetime | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     plates = _trip_plate_candidates(trip)
     window_info: dict[str, Any] = {"fonte": "", "inicio": None, "fim": None, "total_pontos_placa": 0, "pontos_janela": 0}
     if not plates:
         log.append("RASTREADOR: placa LCTE ausente.")
         return pd.DataFrame(), window_info
-    start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
+    start, end, source = _tracker_window_bounds(trip, control_matches, config, log, previous_trip_dt, next_trip_dt)
     window_info.update({"fonte": source, "inicio": start, "fim": end})
     view = rastreador[rastreador["placa_norm"].fillna("").astype(str).isin(plates)].copy()
     window_info["total_pontos_placa"] = int(len(view))
@@ -506,6 +538,8 @@ def _filter_tracker_for_trip_from_db(
     config: dict[str, str],
     log: list[str],
     plate_count_cache: dict[str, int] | None = None,
+    previous_trip_dt: datetime | None = None,
+    next_trip_dt: datetime | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     plates = _trip_plate_candidates(trip)
     window_info: dict[str, Any] = {"fonte": "", "inicio": None, "fim": None, "total_pontos_placa": 0, "pontos_janela": 0}
@@ -513,7 +547,7 @@ def _filter_tracker_for_trip_from_db(
         log.append("RASTREADOR: placa LCTE ausente.")
         return pd.DataFrame(), window_info
 
-    start, end, source = _tracker_window_bounds(trip, control_matches, config, log)
+    start, end, source = _tracker_window_bounds(trip, control_matches, config, log, previous_trip_dt, next_trip_dt)
     window_info.update({"fonte": source, "inicio": start, "fim": end})
     cache_key = "|".join(plates)
     if plate_count_cache is not None and cache_key in plate_count_cache:
@@ -659,6 +693,8 @@ def _select_municipality_block(
     kind: str,
     reference_dt: datetime | None,
     after_dt: datetime | None = None,
+    trip: pd.Series | None = None,
+    used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     if not stays:
         return None, "Sem registros no municipio dentro da janela da viagem."
@@ -667,6 +703,11 @@ def _select_municipality_block(
         candidates = [stay for stay in candidates if stay["arrival"] > after_dt] or [stay for stay in candidates if stay["departure"] > after_dt]
     if not candidates:
         return None, "Sem bloco compativel com a sequencia da viagem."
+    if trip is not None:
+        available = _available_stays(candidates, trip, kind, used_tracker_stays)
+        if not available:
+            return None, "Bloco de permanencia ja vinculado a outra viagem LCTE."
+        candidates = available
     if len(candidates) > 1:
         reason = "Multiplas permanencias no municipio - necessita verificacao."
     else:
@@ -686,6 +727,7 @@ def _apply_special_municipality_stay(
     log: list[str],
     kind: str,
     after_dt: datetime | None = None,
+    used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
 ) -> list[str]:
     reason_codes: list[str] = []
     if kind == "ORIGEM":
@@ -712,7 +754,7 @@ def _apply_special_municipality_stay(
     city, city_uf, label = special
     blocks, mask = _municipality_blocks(ordered, city, city_uf, config)
     reference_dt = after_dt if kind == "DESTINO" and after_dt else _trip_reference_datetime(trip)
-    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt)
+    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt, trip, used_tracker_stays)
     result[f"regra_especial_{prefix}"] = 1
     result[f"municipio_operacional_{prefix}"] = f"{label}/{city_uf}"
     result[f"metodo_localizacao_{prefix}"] = "municipio_uf_rastreador"
@@ -722,9 +764,13 @@ def _apply_special_municipality_stay(
     if len(blocks) > 1:
         reason_codes.append("MULTIPLAS_PERMANENCIAS_MUNICIPIO")
     if selected is None:
-        reason_codes.append("SEM_REGISTROS_MUNICIPIO")
-        log.append(f"RASTREADOR: {label} sem registros municipais na janela da viagem.")
+        if "ja vinculado" in choice_reason:
+            reason_codes.append("RASTREADOR_PERMANENCIA_JA_UTILIZADA")
+        else:
+            reason_codes.append("SEM_REGISTROS_MUNICIPIO")
+        log.append(f"RASTREADOR: {label} nao selecionado. {choice_reason}")
         return reason_codes
+    _mark_stay_used(trip, kind, selected, used_tracker_stays)
     result.update(
         {
             arrival_key: selected["arrival"],
@@ -857,6 +903,36 @@ def _finish_stay(stay: dict[str, Any]) -> dict[str, Any]:
     return stay
 
 
+def _stay_usage_key(trip: pd.Series, kind: str, stay: dict[str, Any]) -> tuple[str, str, str, str]:
+    plate = _trip_primary_plate(trip)
+    arrival = stay.get("arrival")
+    departure = stay.get("departure")
+    arrival_text = arrival.isoformat(sep=" ", timespec="minutes") if hasattr(arrival, "isoformat") else str(arrival or "")
+    departure_text = departure.isoformat(sep=" ", timespec="minutes") if hasattr(departure, "isoformat") else str(departure or "")
+    return plate, "PERMANENCIA", arrival_text, departure_text
+
+
+def _available_stays(
+    stays: list[dict[str, Any]],
+    trip: pd.Series,
+    kind: str,
+    used_tracker_stays: set[tuple[str, str, str, str]] | None,
+) -> list[dict[str, Any]]:
+    if not used_tracker_stays:
+        return stays
+    return [stay for stay in stays if _stay_usage_key(trip, kind, stay) not in used_tracker_stays]
+
+
+def _mark_stay_used(
+    trip: pd.Series,
+    kind: str,
+    stay: dict[str, Any],
+    used_tracker_stays: set[tuple[str, str, str, str]] | None,
+) -> None:
+    if used_tracker_stays is not None:
+        used_tracker_stays.add(_stay_usage_key(trip, kind, stay))
+
+
 def _stays_from_mask(
     df: pd.DataFrame,
     mask: pd.Series,
@@ -920,7 +996,13 @@ def _stays_from_mask(
     return stays
 
 
-def _detect_trip_events(df: pd.DataFrame, trip: pd.Series, config: dict[str, str], log: list[str]) -> dict[str, Any]:
+def _detect_trip_events(
+    df: pd.DataFrame,
+    trip: pd.Series,
+    config: dict[str, str],
+    log: list[str],
+    used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "chegada_origem": None,
         "saida_origem": None,
@@ -966,7 +1048,7 @@ def _detect_trip_events(df: pd.DataFrame, trip: pd.Series, config: dict[str, str
         return result
 
     special_reasons: list[str] = []
-    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM"))
+    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM", used_tracker_stays=used_tracker_stays))
     origem_mask = _location_mask_with_geo(ordered, str(trip.get("origem") or ""), trip.get("latitude_origem"), trip.get("longitude_origem"), config)
     destino_mask = _location_mask_with_geo(ordered, str(trip.get("destino") or ""), trip.get("latitude_destino"), trip.get("longitude_destino"), config)
     origem_distances = _distance_series_meters(ordered, trip.get("latitude_origem"), trip.get("longitude_origem"))
@@ -984,8 +1066,15 @@ def _detect_trip_events(df: pd.DataFrame, trip: pd.Series, config: dict[str, str
     split_origin_by_reference = not _has_coordinates(trip.get("latitude_origem"), trip.get("longitude_origem"))
     split_destination_by_reference = not _has_coordinates(trip.get("latitude_destino"), trip.get("longitude_destino"))
     origin_stays = [] if result["regra_especial_origem"] else _stays_from_mask(ordered, origem_stay_mask, config, split_by_reference=split_origin_by_reference, distance_meters=origem_distances)
+    if origin_stays and not result["regra_especial_origem"]:
+        available_origin_stays = _available_stays(origin_stays, trip, "ORIGEM", used_tracker_stays)
+        if not available_origin_stays:
+            special_reasons.append("RASTREADOR_PERMANENCIA_JA_UTILIZADA")
+            log.append("RASTREADOR: todos os blocos de origem compativeis ja foram vinculados a outra viagem LCTE.")
+        origin_stays = available_origin_stays
     if origin_stays and not result["encontrou_origem"]:
         origin = origin_stays[0]
+        _mark_stay_used(trip, "ORIGEM", origin, used_tracker_stays)
         result.update(
             {
                 "chegada_origem": origin["arrival"],
@@ -1012,10 +1101,17 @@ def _detect_trip_events(df: pd.DataFrame, trip: pd.Series, config: dict[str, str
         destination_base = ordered[ordered["_data_dt"] > pd.Timestamp(result["saida_origem"])]
         destination_mask = destino_mask.reindex(destination_base.index, fill_value=False)
         destination_distances = destino_distances.reindex(destination_base.index)
-    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem")))
+    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem"), used_tracker_stays))
     dest_stays = [] if result["regra_especial_destino"] else _stays_from_mask(destination_base, destination_mask, config, split_by_reference=split_destination_by_reference, distance_meters=destination_distances)
+    if dest_stays and not result["regra_especial_destino"]:
+        available_dest_stays = _available_stays(dest_stays, trip, "DESTINO", used_tracker_stays)
+        if not available_dest_stays:
+            special_reasons.append("RASTREADOR_PERMANENCIA_JA_UTILIZADA")
+            log.append("RASTREADOR: todos os blocos de destino compativeis ja foram vinculados a outra viagem LCTE.")
+        dest_stays = available_dest_stays
     if dest_stays and not result["encontrou_destino"]:
         dest = max(dest_stays, key=lambda stay: (float(stay.get("minutes") or 0), int(stay.get("points") or 0)))
+        _mark_stay_used(trip, "DESTINO", dest, used_tracker_stays)
         result.update(
             {
                 "chegada_destino": dest["arrival"],
@@ -1290,6 +1386,8 @@ def _distance_to_point(df: pd.DataFrame, lat: Any, lon: Any) -> float | None:
     ref_lon = _safe_float(lon)
     if ref_lat is None or ref_lon is None or df.empty:
         return None
+    if "latitude" not in df.columns or "longitude" not in df.columns:
+        return None
     coords = df.dropna(subset=["latitude", "longitude"])
     distances = [
         _haversine_km(ref_lat, ref_lon, float(row["latitude"]), float(row["longitude"]))
@@ -1346,6 +1444,32 @@ def _next_trip_by_plate(lcte: pd.DataFrame) -> dict[int, datetime | None]:
         for idx, trip_id in enumerate(ids):
             next_dt = dates[idx + 1] if idx + 1 < len(dates) else None
             result[int(trip_id)] = None if pd.isna(next_dt) else next_dt.to_pydatetime()
+    return result
+
+
+def _trip_neighbors_by_plate(lcte: pd.DataFrame) -> dict[int, tuple[datetime | None, datetime | None]]:
+    if lcte.empty or "id" not in lcte.columns:
+        return {}
+    lcte_dt = lcte.copy()
+    lcte_dt["_trip_dt"] = pd.to_datetime(lcte_dt.apply(_trip_reference_datetime, axis=1), errors="coerce")
+    result: dict[int, tuple[datetime | None, datetime | None]] = {}
+    for _, group in lcte_dt.sort_values(["placa_norm", "_trip_dt", "id"], na_position="last").groupby("placa_norm", dropna=False):
+        records = group.to_dict(orient="records")
+        for index, row in enumerate(records):
+            try:
+                trip_id = int(row.get("id") or 0)
+            except Exception:
+                continue
+            prev_dt = records[index - 1].get("_trip_dt") if index > 0 else None
+            next_dt = records[index + 1].get("_trip_dt") if index + 1 < len(records) else None
+            current_dt = row.get("_trip_dt")
+            current_ts = current_dt if isinstance(current_dt, pd.Timestamp) and not pd.isna(current_dt) else None
+            prev_ts = prev_dt if isinstance(prev_dt, pd.Timestamp) and not pd.isna(prev_dt) else None
+            next_ts = next_dt if isinstance(next_dt, pd.Timestamp) and not pd.isna(next_dt) else None
+            result[trip_id] = (
+                prev_ts.to_pydatetime() if prev_ts is not None and current_ts is not None and prev_ts < current_ts else None,
+                next_ts.to_pydatetime() if next_ts is not None and current_ts is not None and next_ts > current_ts else None,
+            )
     return result
 
 
@@ -1479,13 +1603,21 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None) -> list[
             control_by_plate[str(plate_key)] = group.copy()
     empty_control = control.iloc[0:0].copy() if not control.empty else pd.DataFrame()
     tracker_plate_counts: dict[str, int] = {}
+    used_control_ids: set[int] = set()
+    used_tracker_stays: set[tuple[str, str, str, str]] = set()
+    trip_neighbors = _trip_neighbors_by_plate(lcte)
+    processing_lcte = lcte.copy()
+    processing_lcte["_trip_dt"] = pd.to_datetime(processing_lcte.apply(_trip_reference_datetime, axis=1), errors="coerce")
+    processing_lcte = processing_lcte.sort_values(["placa_norm", "_trip_dt", "id"], na_position="last")
 
     total_trips = max(len(lcte), 1)
     last_progress = -1
-    for trip_index, (_, trip) in enumerate(lcte.iterrows(), start=1):
+    for trip_index, (_, trip) in enumerate(processing_lcte.iterrows(), start=1):
         log: list[str] = ["LCTE: viagem mestre encontrada."]
         reason_codes: list[str] = []
         plate = str(trip.get("placa_norm") or "")
+        trip_id = int(trip.get("id") or 0)
+        previous_trip_dt, next_trip_dt = trip_neighbors.get(trip_id, (None, None))
         if not plate:
             reason_codes.append("LCTE_SEM_PLACA")
         if not _doc_set(trip.get("nf")):
@@ -1509,23 +1641,26 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None) -> list[
                 )
             else:
                 control_candidates = empty_control
-            control_matches, control_score, control_class, control_criteria, control_reason = _select_control_matches(control_candidates, trip, log)
+            control_matches, control_score, control_class, control_criteria, control_reason = _select_control_matches(control_candidates, trip, log, used_control_ids)
             if control_reason:
                 reason_codes.append(control_reason)
             if not control_matches.empty:
+                selected_control_id = int(control_matches.iloc[0].get("id") or 0)
+                if selected_control_id:
+                    used_control_ids.add(selected_control_id)
                 control_row = control_matches.iloc[0]
                 if not _doc_set(control_row.get("nf")):
                     reason_codes.append("CONTROL_SEM_NF")
                 control_status = normalize_text(control_row.get("status"))
                 if "VIAJ" in control_status or (not str(control_row.get("data_hora_fim") or "") and not str(control_row.get("data_fim") or "")):
                     reason_codes.append("CONTROL_VIAGEM_EM_ANDAMENTO")
-            tracker_matches, window_info = _filter_tracker_for_trip_from_db(trip, control_matches, config, log, tracker_plate_counts)
+            tracker_matches, window_info = _filter_tracker_for_trip_from_db(trip, control_matches, config, log, tracker_plate_counts, previous_trip_dt, next_trip_dt)
             if tracker_matches.empty:
                 reason_codes.append("RASTREADOR_SEM_REGISTROS")
             elif tracker_matches.get("_data_dt", pd.Series(dtype=object)).isna().all():
                 reason_codes.append("RASTREADOR_DATA_INVALIDA")
 
-            tracker_events = _detect_trip_events(tracker_matches, trip, config, log)
+            tracker_events = _detect_trip_events(tracker_matches, trip, config, log, used_tracker_stays)
             for special_reason in tracker_events.get("codigos_motivo_especial", []):
                 if special_reason:
                     reason_codes.append(str(special_reason))
