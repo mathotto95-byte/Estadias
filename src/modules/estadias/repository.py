@@ -497,6 +497,20 @@ def replace_cross(rows: list[dict[str, Any]], usuario: str) -> int:
     return insert_rows(CROSS_TABLE, payload)
 
 
+def replace_cross_subset(rows: list[dict[str, Any]], usuario: str, lcte_ids: list[int] | set[int]) -> int:
+    ids = [int(value) for value in dict.fromkeys(lcte_ids) if int(value or 0)]
+    if not ids:
+        return 0
+    placeholders = ", ".join("?" for _ in ids)
+    with get_connection() as conn:
+        conn.execute(f"delete from {CROSS_TABLE} where lcte_id in ({placeholders})", tuple(ids))
+    now = brasilia_now_iso()
+    payload = [row | {"atualizado_em": now, "atualizado_por": usuario} for row in rows]
+    inserted = insert_rows(CROSS_TABLE, payload)
+    _invalidate_read_cache()
+    return inserted
+
+
 def read_config() -> pd.DataFrame:
     return read_filtered(CONFIG_TABLE, {}, 100)
 

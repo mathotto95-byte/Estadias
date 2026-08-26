@@ -698,6 +698,7 @@ def _select_municipality_block(
     after_dt: datetime | None = None,
     trip: pd.Series | None = None,
     used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+    control_events: dict[str, datetime | None] | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     if not stays:
         return None, "Sem registros no municipio dentro da janela da viagem."
@@ -715,6 +716,9 @@ def _select_municipality_block(
         reason = "Multiplas permanencias no municipio - necessita verificacao."
     else:
         reason = "Bloco unico compativel com a viagem."
+    if control_events:
+        selected, operational_reason = _select_stay_by_operational_reference(candidates, kind, control_events)
+        return selected, f"{reason} {operational_reason}."
     if reference_dt:
         selected = min(candidates, key=lambda stay: abs((stay["arrival"] - reference_dt).total_seconds()))
     else:
@@ -731,6 +735,7 @@ def _apply_special_municipality_stay(
     kind: str,
     after_dt: datetime | None = None,
     used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+    control_events: dict[str, datetime | None] | None = None,
 ) -> list[str]:
     reason_codes: list[str] = []
     if kind == "ORIGEM":
@@ -757,7 +762,7 @@ def _apply_special_municipality_stay(
     city, city_uf, label = special
     blocks, mask = _municipality_blocks(ordered, city, city_uf, config)
     reference_dt = after_dt if kind == "DESTINO" and after_dt else _trip_reference_datetime(trip)
-    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt, trip, used_tracker_stays)
+    selected, choice_reason = _select_municipality_block(blocks, kind, reference_dt, after_dt, trip, used_tracker_stays, control_events)
     result[f"regra_especial_{prefix}"] = 1
     result[f"municipio_operacional_{prefix}"] = f"{label}/{city_uf}"
     result[f"metodo_localizacao_{prefix}"] = "municipio_uf_rastreador"
@@ -936,6 +941,50 @@ def _mark_stay_used(
         used_tracker_stays.add(_stay_usage_key(trip, kind, stay))
 
 
+def _select_stay_by_operational_reference(
+    stays: list[dict[str, Any]],
+    kind: str,
+    control_events: dict[str, datetime | None] | None = None,
+) -> tuple[dict[str, Any], str]:
+    if not stays:
+        raise ValueError("stays vazio")
+    ordered = sorted(stays, key=lambda stay: stay["arrival"])
+    control_events = control_events or {}
+    if kind == "ORIGEM":
+        control_start = control_events.get("control_chegada_origem")
+        control_end = control_events.get("control_saida_origem")
+    else:
+        control_start = control_events.get("control_chegada_destino")
+        control_end = control_events.get("control_saida_destino")
+
+    if control_start and control_end:
+        overlapping = [
+            stay
+            for stay in ordered
+            if stay["arrival"] <= control_end and stay["departure"] >= control_start
+        ]
+        if overlapping:
+            selected = max(
+                overlapping,
+                key=lambda stay: (
+                    min(stay["departure"], control_end) - max(stay["arrival"], control_start)
+                ).total_seconds(),
+            )
+            return selected, "bloco sobreposto ao horario operacional do CONTROL"
+
+    if control_start:
+        after_start = [stay for stay in ordered if stay["departure"] >= control_start]
+        if after_start:
+            return after_start[0], "primeiro bloco compativel com o inicio operacional do CONTROL"
+
+    if control_end:
+        before_end = [stay for stay in ordered if stay["arrival"] <= control_end]
+        if before_end:
+            return before_end[-1], "ultimo bloco compativel com o fim operacional do CONTROL"
+
+    return ordered[0], "primeiro bloco na sequencia da viagem"
+
+
 def _stays_from_mask(
     df: pd.DataFrame,
     mask: pd.Series,
@@ -1005,6 +1054,7 @@ def _detect_trip_events(
     config: dict[str, str],
     log: list[str],
     used_tracker_stays: set[tuple[str, str, str, str]] | None = None,
+    control_events: dict[str, datetime | None] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "chegada_origem": None,
@@ -1051,7 +1101,7 @@ def _detect_trip_events(
         return result
 
     special_reasons: list[str] = []
-    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM", used_tracker_stays=used_tracker_stays))
+    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM", used_tracker_stays=used_tracker_stays, control_events=control_events))
     origem_mask = _location_mask_with_geo(ordered, str(trip.get("origem") or ""), trip.get("latitude_origem"), trip.get("longitude_origem"), config)
     destino_mask = _location_mask_with_geo(ordered, str(trip.get("destino") or ""), trip.get("latitude_destino"), trip.get("longitude_destino"), config)
     origem_distances = _distance_series_meters(ordered, trip.get("latitude_origem"), trip.get("longitude_origem"))
@@ -1076,7 +1126,7 @@ def _detect_trip_events(
             log.append("RASTREADOR: todos os blocos de origem compativeis ja foram vinculados a outra viagem LCTE.")
         origin_stays = available_origin_stays
     if origin_stays and not result["encontrou_origem"]:
-        origin = origin_stays[0]
+        origin, origin_choice_reason = _select_stay_by_operational_reference(origin_stays, "ORIGEM", control_events)
         _mark_stay_used(trip, "ORIGEM", origin, used_tracker_stays)
         result.update(
             {
@@ -1094,7 +1144,7 @@ def _detect_trip_events(
         )
         log.append(
             f"RASTREADOR: origem identificada em bloco continuo com {origin['points']} ponto(s), "
-            f"{origin.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s)."
+            f"{origin.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); {origin_choice_reason}."
         )
 
     destination_base = ordered
@@ -1104,7 +1154,7 @@ def _detect_trip_events(
         destination_base = ordered[ordered["_data_dt"] > pd.Timestamp(result["saida_origem"])]
         destination_mask = destino_mask.reindex(destination_base.index, fill_value=False)
         destination_distances = destino_distances.reindex(destination_base.index)
-    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem"), used_tracker_stays))
+    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem"), used_tracker_stays, control_events))
     dest_stays = [] if result["regra_especial_destino"] else _stays_from_mask(destination_base, destination_mask, config, split_by_reference=split_destination_by_reference, distance_meters=destination_distances)
     if dest_stays and not result["regra_especial_destino"]:
         available_dest_stays = _available_stays(dest_stays, trip, "DESTINO", used_tracker_stays)
@@ -1113,7 +1163,7 @@ def _detect_trip_events(
             log.append("RASTREADOR: todos os blocos de destino compativeis ja foram vinculados a outra viagem LCTE.")
         dest_stays = available_dest_stays
     if dest_stays and not result["encontrou_destino"]:
-        dest = min(dest_stays, key=lambda stay: stay["arrival"])
+        dest, dest_choice_reason = _select_stay_by_operational_reference(dest_stays, "DESTINO", control_events)
         _mark_stay_used(trip, "DESTINO", dest, used_tracker_stays)
         result.update(
             {
@@ -1131,7 +1181,7 @@ def _detect_trip_events(
         )
         log.append(
             f"RASTREADOR: destino identificado depois da origem em bloco continuo com {dest['points']} ponto(s), "
-            f"{dest.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s)."
+            f"{dest.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); {dest_choice_reason}."
         )
     elif not result["encontrou_origem"]:
         log.append("RASTREADOR: destino nao foi fechado porque a origem nao iniciou a sequencia.")
@@ -1685,13 +1735,14 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
                 control_status = normalize_text(control_row.get("status"))
                 if "VIAJ" in control_status or (not str(control_row.get("data_hora_fim") or "") and not str(control_row.get("data_fim") or "")):
                     reason_codes.append("CONTROL_VIAGEM_EM_ANDAMENTO")
+            control_events = _control_event_times(control_matches, trip)
             tracker_matches, window_info = _filter_tracker_for_trip_from_db(trip, control_matches, config, log, tracker_plate_counts, previous_trip_dt, next_trip_dt)
             if tracker_matches.empty:
                 reason_codes.append("RASTREADOR_SEM_REGISTROS")
             elif tracker_matches.get("_data_dt", pd.Series(dtype=object)).isna().all():
                 reason_codes.append("RASTREADOR_DATA_INVALIDA")
 
-            tracker_events = _detect_trip_events(tracker_matches, trip, config, log, used_tracker_stays)
+            tracker_events = _detect_trip_events(tracker_matches, trip, config, log, used_tracker_stays, control_events)
             for special_reason in tracker_events.get("codigos_motivo_especial", []):
                 if special_reason:
                     reason_codes.append(str(special_reason))
@@ -1722,7 +1773,6 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
             if not encontrou_destino:
                 reason_codes.append("DESTINO_NAO_VISITADO")
 
-            control_events = _control_event_times(control_matches, trip)
             comparison = _compare_control_tracker_events(
                 {
                     "chegada_origem": chegada_origem,
@@ -2018,6 +2068,7 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
     recalculated_rows = build_cross_rows(build_progress, plate_filter)
     _emit_progress(progress_callback, 89, 100, "Comparando registros novos e alterados...")
     rows: list[dict[str, Any]] = []
+    rows_to_save: list[dict[str, Any]] = []
     new_count = 0
     changed_count = 0
     preserved_count = 0
@@ -2054,6 +2105,8 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
         old = existing_by_lcte.get(lcte_id)
         if old and int(old.get("concluido") or 0) == 1 and str(old.get("painel_atual") or "").upper() == "CONCLUIDOS":
             rows.append(old)
+            if plate_filter:
+                rows_to_save.append(old)
             preserved_count += 1
             continue
         if not old:
@@ -2061,9 +2114,14 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
         elif _row_signature(row) != _row_signature(old):
             changed_count += 1
         rows.append(row)
+        if plate_filter:
+            rows_to_save.append(row)
 
     _emit_progress(progress_callback, 95, 100, "Salvando resultado atualizado...")
-    repository.replace_cross(rows, usuario)
+    if plate_filter:
+        repository.replace_cross_subset(rows_to_save, usuario, recalculated_ids)
+    else:
+        repository.replace_cross(rows, usuario)
     result = pd.DataFrame(rows)
     summary_base = pd.DataFrame(recalculated_rows) if plate_filter else result
     summary = {
