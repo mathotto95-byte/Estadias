@@ -51,6 +51,9 @@ SPECIAL_OPERATIONAL_MUNICIPALITIES = {
     ("PARANAGUA", "PR"): "Paranagua",
     ("SANTOS", "SP"): "Santos",
 }
+CITY_ONLY_REFERENCE_MUNICIPALITIES = {"PARANAGUA", "SANTOS"}
+CLIENT_BREAK_REFERENCE_MUNICIPALITIES = {"RONDONOPOLIS"}
+DEFAULT_REFERENCE_RETURN_TOLERANCE_MINUTES = 60
 
 CROSS_DEFAULTS: dict[str, object] = {
     "lcte_id": 0,
@@ -478,15 +481,8 @@ def _tracker_window_bounds(
         log.append("RASTREADOR: janela definida pelo LCTE; CONTROL usado apenas como informacao.")
     else:
         log.append("RASTREADOR: LCTE sem data valida para definir janela.")
-    if start and previous_trip_dt and start < previous_trip_dt:
-        start = previous_trip_dt
-        log.append("RASTREADOR: inicio da janela limitado pela viagem LCTE anterior da mesma placa.")
-    if end and next_trip_dt and end > next_trip_dt:
-        limited_end = next_trip_dt - timedelta(minutes=1)
-        if start and limited_end <= start:
-            limited_end = next_trip_dt
-        end = limited_end
-        log.append("RASTREADOR: fim da janela limitado pela proxima viagem LCTE da mesma placa.")
+    if previous_trip_dt or next_trip_dt:
+        log.append("RASTREADOR: viagens vizinhas da placa mantidas apenas no diagnostico; a janela nao corta a permanencia.")
     return start, end, source
 
 
@@ -813,10 +809,181 @@ def _distance_series_meters(df: pd.DataFrame, lat: Any, lon: Any) -> pd.Series:
 
 
 def _tracker_reference_signature(row: pd.Series) -> str:
-    signature = normalize_text(row.get("endereco"))
-    if signature:
-        return signature
+    city = normalize_text(row.get("cidade"))
+    client = normalize_text(row.get("cliente_referencia"))
+    reference = normalize_text(row.get("referencia")) or normalize_text(row.get("endereco"))
+    pieces = [piece for piece in [city, client, reference] if piece]
+    if pieces:
+        return " | ".join(pieces)
     return normalize_text(" ".join(str(row.get(column) or "") for column in ["cidade", "uf", "evento", "status"]))
+
+
+def _reference_text_series(df: pd.DataFrame, columns: list[str]) -> pd.Series:
+    if df.empty:
+        return pd.Series(dtype=str)
+    values = []
+    for column in columns:
+        if column in df.columns:
+            values.append(df[column].fillna("").astype(str))
+    if not values:
+        return pd.Series([""] * len(df), index=df.index)
+    text = values[0]
+    for value in values[1:]:
+        text = text.str.cat(value, sep=" ")
+    return text.map(normalize_text)
+
+
+def _contains_normalized(series: pd.Series, expected: str) -> pd.Series:
+    expected = normalize_text(expected)
+    if not expected:
+        return pd.Series([True] * len(series), index=series.index)
+    return series.fillna("").astype(str).map(normalize_text).str.contains(expected, regex=False)
+
+
+def _reference_match_rule(location: Any, uf: Any = "") -> tuple[str, str, str]:
+    city, uf_value = _location_city_uf(location, uf)
+    for special_city in CITY_ONLY_REFERENCE_MUNICIPALITIES:
+        if special_city in city:
+            return city, uf_value, "MUNICIPIO"
+    for special_city in CLIENT_BREAK_REFERENCE_MUNICIPALITIES:
+        if special_city in city:
+            return city, uf_value, "MUNICIPIO_CLIENTE_SEM_TOLERANCIA_CLIENTE"
+    return city, uf_value, "MUNICIPIO_CLIENTE"
+
+
+def _reference_customer_text(df: pd.DataFrame) -> pd.Series:
+    return _reference_text_series(df, ["cliente_referencia", "referencia", "endereco"])
+
+
+def _reference_location_mask(df: pd.DataFrame, location: Any, expected_customer: Any, config: dict[str, str]) -> tuple[pd.Series, pd.Series, str, str]:
+    if df.empty:
+        return pd.Series(dtype=bool), pd.Series(dtype=str), "", ""
+    city, uf_value, rule = _reference_match_rule(location, "")
+    if not city:
+        return pd.Series([False] * len(df), index=df.index), pd.Series([""] * len(df), index=df.index), rule, ""
+
+    city_text = _reference_text_series(df, ["cidade"])
+    fallback_text = _reference_text_series(df, ["endereco", "referencia", "evento", "status"])
+    city_mask = city_text.str.contains(city, regex=False) | fallback_text.str.contains(city, regex=False)
+    if uf_value and "uf" in df.columns:
+        uf_text = df["uf"].fillna("").astype(str).map(normalize_text)
+        city_mask &= uf_text.eq("") | uf_text.eq(uf_value) | fallback_text.str.contains(f" {uf_value} ", regex=False) | fallback_text.str.endswith(f" {uf_value}")
+
+    primary_customer_text = _reference_text_series(df, ["cliente_referencia"])
+    customer_text = primary_customer_text
+    if not primary_customer_text.str.strip().astype(bool).any():
+        customer_text = _reference_customer_text(df)
+    customer = normalize_text(expected_customer)
+    if rule in {"MUNICIPIO", "MUNICIPIO_CLIENTE_SEM_TOLERANCIA_CLIENTE"} or not customer:
+        customer_mask = pd.Series([True] * len(df), index=df.index)
+    else:
+        customer_mask = customer_text.str.contains(customer, regex=False)
+        if not customer_mask.any():
+            customer_mask = pd.Series([True] * len(df), index=df.index)
+    if rule == "MUNICIPIO":
+        signature = city_text.map(normalize_text)
+    else:
+        signature = city_text.str.cat(customer_text, sep=" | ").map(normalize_text)
+    return (city_mask & customer_mask).reindex(df.index, fill_value=False), signature, rule, city
+
+
+def _reference_rows_summary(rows: pd.DataFrame) -> str:
+    if rows.empty:
+        return ""
+    values: list[str] = []
+    for column in ["cidade", "cliente_referencia", "referencia", "endereco"]:
+        if column not in rows.columns:
+            continue
+        for raw in rows[column].fillna("").astype(str).tolist():
+            value = raw.strip()
+            if value and value not in values:
+                values.append(value)
+            if len(values) >= 10:
+                return "; ".join(values)
+    return "; ".join(values)
+
+
+def _finish_reference_stay(stay: dict[str, Any], ordered: pd.DataFrame) -> dict[str, Any]:
+    block_rows = ordered.loc[stay.get("row_indexes") or []].copy()
+    stay["points"] = int(stay.get("points") or 0)
+    stay["references"] = _reference_rows_summary(block_rows)
+    if not stay.get("exit_reason"):
+        stay["exit_reason"] = "fim da janela do rastreador"
+    return _finish_stay(stay)
+
+
+def _stays_from_reference_blocks(
+    df: pd.DataFrame,
+    mask: pd.Series,
+    config: dict[str, str],
+    signature: pd.Series,
+    break_on_signature_change: bool = False,
+) -> list[dict[str, Any]]:
+    if df.empty or not mask.any():
+        return []
+    ordered = df.dropna(subset=["_data_dt"]).sort_values("_data_dt").copy()
+    if ordered.empty:
+        return []
+    inside = mask.reindex(ordered.index, fill_value=False)
+    signature = signature.reindex(ordered.index, fill_value="").fillna("").astype(str).map(normalize_text)
+    min_points = int(_config_number(config, "min_pontos_permanencia", 1))
+    grace_minutes = _config_number(config, "tolerancia_retorno_referencia_minutos", DEFAULT_REFERENCE_RETURN_TOLERANCE_MINUTES)
+
+    stays: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    outside_start: pd.Timestamp | None = None
+    outside_count = 0
+
+    def close_current(reason: str) -> None:
+        nonlocal current, outside_start, outside_count
+        if current is not None and int(current.get("points") or 0) >= min_points:
+            current["exit_reason"] = reason
+            stays.append(_finish_reference_stay(current, ordered))
+        current = None
+        outside_start = None
+        outside_count = 0
+
+    for idx, row in ordered.iterrows():
+        current_dt = row["_data_dt"]
+        if pd.isna(current_dt):
+            continue
+        is_inside = bool(inside.loc[idx])
+        row_signature = signature.loc[idx]
+        if is_inside:
+            if current is None:
+                current = _new_stay(current_dt)
+                current["reference_signature"] = row_signature
+                current["row_indexes"] = []
+            elif break_on_signature_change and row_signature and current.get("reference_signature") and row_signature != current.get("reference_signature"):
+                close_current("mudanca de cliente referencia")
+                current = _new_stay(current_dt)
+                current["reference_signature"] = row_signature
+                current["row_indexes"] = []
+            elif outside_start is not None:
+                outside_minutes = max((current_dt - outside_start).total_seconds() / 60, 0)
+                if outside_minutes <= grace_minutes:
+                    current["ignored_interruptions"] = int(current.get("ignored_interruptions") or 0) + 1
+                    current["oscillation_absorbed_min"] = _minutes(float(current.get("oscillation_absorbed_min") or 0) + outside_minutes)
+                    outside_start = None
+                    outside_count = 0
+                else:
+                    close_current(f"fora da referencia por mais de {int(grace_minutes)} min")
+                    current = _new_stay(current_dt)
+                    current["reference_signature"] = row_signature
+                    current["row_indexes"] = []
+            current["departure"] = current_dt.to_pydatetime()
+            current["points"] = int(current.get("points") or 0) + 1
+            current.setdefault("row_indexes", []).append(idx)
+        elif current is not None:
+            if outside_start is None:
+                outside_start = current_dt
+            outside_count += 1
+
+    if current is not None and int(current.get("points") or 0) >= min_points:
+        if outside_start is not None and outside_count:
+            current["exit_reason"] = f"fora da referencia no fim da janela ({outside_count} ponto(s))"
+        stays.append(_finish_reference_stay(current, ordered))
+    return stays
 
 
 def _new_stay(current_dt: pd.Timestamp) -> dict[str, Any]:
@@ -998,6 +1165,83 @@ def _stays_from_mask(
     return stays
 
 
+def _select_reference_stay(
+    stays: list[dict[str, Any]],
+    trip: pd.Series,
+    kind: str,
+    after_dt: datetime | None,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None,
+    min_stop_minutes: float,
+    expected_customer: Any = "",
+) -> tuple[dict[str, Any] | None, str]:
+    if not stays:
+        return None, "Sem bloco por municipio/cliente referencia no rastreador."
+    candidates = list(stays)
+    if kind == "DESTINO" and after_dt:
+        candidates = [stay for stay in candidates if stay["arrival"] > after_dt] or [stay for stay in candidates if stay["departure"] > after_dt]
+    if not candidates:
+        return None, "Sem bloco de destino depois da origem."
+    available = _available_stays(candidates, trip, kind, used_tracker_stays)
+    if not available:
+        return None, "Bloco de permanencia ja vinculado a outra viagem LCTE."
+    candidates = available
+    customer = normalize_text(expected_customer)
+    if customer:
+        customer_candidates = [
+            stay
+            for stay in candidates
+            if customer in normalize_text(stay.get("reference_signature")) or customer in normalize_text(stay.get("references"))
+        ]
+        if customer_candidates:
+            candidates = customer_candidates
+    significant = [stay for stay in candidates if float(stay.get("minutes") or 0) >= min_stop_minutes]
+    if significant:
+        candidates = significant
+    reason = "Bloco por municipio/cliente referencia selecionado."
+    if len(candidates) > 1:
+        reason = "Multiplos blocos por municipio/cliente referencia; selecionado o primeiro compativel."
+    return min(candidates, key=lambda stay: stay["arrival"]), reason
+
+
+def _apply_reference_stay_result(
+    result: dict[str, Any],
+    trip: pd.Series,
+    kind: str,
+    stay: dict[str, Any],
+    rule: str,
+    city: str,
+    mask_count: int,
+    block_count: int,
+    choice_reason: str,
+    used_tracker_stays: set[tuple[str, str, str, str, str]] | None,
+) -> None:
+    prefix = "origem" if kind == "ORIGEM" else "destino"
+    _mark_stay_used(trip, kind, stay, used_tracker_stays)
+    result.update(
+        {
+            f"chegada_{prefix}": stay["arrival"],
+            f"saida_{prefix}": stay["departure"],
+            f"tempo_{prefix}": stay["minutes"],
+            f"encontrou_{prefix}": True,
+            f"pontos_{prefix}": stay["points"],
+            f"regra_especial_{prefix}": 1 if rule == "MUNICIPIO" else 0,
+            f"municipio_operacional_{prefix}": city,
+            f"metodo_localizacao_{prefix}": "municipio_referencia" if rule == "MUNICIPIO" else "municipio_cliente_referencia",
+            f"qtd_blocos_municipio_{prefix}": block_count,
+            f"bloco_selecionado_{prefix}": f"{stay['arrival']} > {stay['departure']}",
+            f"referencias_visitadas_{prefix}": stay.get("references", ""),
+            f"motivo_escolha_bloco_{prefix}": choice_reason,
+            f"confianca_{prefix}_pct": stay.get("confidence_pct", 0),
+            f"motivo_saida_{prefix}": stay.get("exit_reason", ""),
+            f"interrupcoes_ignoradas_{prefix}": stay.get("ignored_interruptions", 0),
+            f"maior_distancia_temporaria_{prefix}_km": stay.get("max_temp_distance_km", 0),
+            f"tempo_oscilacao_absorvido_{prefix}": stay.get("oscillation_absorbed_min", 0),
+        }
+    )
+    if not result.get(f"pontos_{prefix}"):
+        result[f"pontos_{prefix}"] = mask_count
+
+
 def _detect_trip_events(
     df: pd.DataFrame,
     trip: pd.Series,
@@ -1049,99 +1293,75 @@ def _detect_trip_events(
     if ordered.empty:
         return result
 
+    min_stop_minutes = _config_number(config, "tempo_minimo_parado", 30)
+    return_tolerance_minutes = int(_config_number(config, "tolerancia_retorno_referencia_minutos", DEFAULT_REFERENCE_RETURN_TOLERANCE_MINUTES))
     special_reasons: list[str] = []
-    special_reasons.extend(_apply_special_municipality_stay(result, ordered, trip, config, log, "ORIGEM", used_tracker_stays=used_tracker_stays))
-    origem_mask = _location_mask_with_geo(ordered, str(trip.get("origem") or ""), trip.get("latitude_origem"), trip.get("longitude_origem"), config)
-    destino_mask = _location_mask_with_geo(ordered, str(trip.get("destino") or ""), trip.get("latitude_destino"), trip.get("longitude_destino"), config)
-    origem_distances = _distance_series_meters(ordered, trip.get("latitude_origem"), trip.get("longitude_origem"))
-    destino_distances = _distance_series_meters(ordered, trip.get("latitude_destino"), trip.get("longitude_destino"))
-    result["pontos_origem"] = int(origem_mask.sum())
-    result["pontos_destino"] = int(destino_mask.sum())
     result["distancia_origem_min_km"] = _distance_to_point(ordered, trip.get("latitude_origem"), trip.get("longitude_origem"))
     result["distancia_destino_min_km"] = _distance_to_point(ordered, trip.get("latitude_destino"), trip.get("longitude_destino"))
-    stopped = _stopped_mask(ordered).reindex(ordered.index, fill_value=True)
-    origem_stopped_mask = origem_mask & stopped
-    destino_stopped_mask = destino_mask & stopped
-    origem_stay_mask = origem_stopped_mask if origem_stopped_mask.any() else origem_mask
-    destino_stay_mask = destino_stopped_mask if destino_stopped_mask.any() else destino_mask
 
-    split_origin_by_reference = not _has_coordinates(trip.get("latitude_origem"), trip.get("longitude_origem"))
-    split_destination_by_reference = not _has_coordinates(trip.get("latitude_destino"), trip.get("longitude_destino"))
-    origin_stays = [] if result["regra_especial_origem"] else _stays_from_mask(ordered, origem_stay_mask, config, split_by_reference=split_origin_by_reference, distance_meters=origem_distances)
-    if origin_stays and not result["regra_especial_origem"]:
-        available_origin_stays = _available_stays(origin_stays, trip, "ORIGEM", used_tracker_stays)
-        if not available_origin_stays:
+    origem_mask, origem_signature, origem_rule, origem_city = _reference_location_mask(
+        ordered,
+        trip.get("origem"),
+        trip.get("remetente") or trip.get("cliente"),
+        config,
+    )
+    result["pontos_origem"] = int(origem_mask.sum()) if not origem_mask.empty else 0
+    origin_stays = _stays_from_reference_blocks(
+        ordered,
+        origem_mask,
+        config,
+        origem_signature,
+        break_on_signature_change=origem_rule == "MUNICIPIO_CLIENTE_SEM_TOLERANCIA_CLIENTE",
+    )
+    result["qtd_blocos_municipio_origem"] = len(origin_stays)
+    origin_customer = trip.get("remetente") or trip.get("cliente")
+    selected_origin, origin_reason = _select_reference_stay(origin_stays, trip, "ORIGEM", None, used_tracker_stays, min_stop_minutes, origin_customer)
+    if selected_origin is None:
+        if "ja vinculado" in origin_reason:
             special_reasons.append("RASTREADOR_PERMANENCIA_JA_UTILIZADA")
-            log.append("RASTREADOR: todos os blocos de origem compativeis ja foram vinculados a outra viagem LCTE.")
-        origin_stays = available_origin_stays
-    if origin_stays and not result["encontrou_origem"]:
-        origin = origin_stays[0]
-        _mark_stay_used(trip, "ORIGEM", origin, used_tracker_stays)
-        result.update(
-            {
-                "chegada_origem": origin["arrival"],
-                "saida_origem": origin["departure"],
-                "tempo_origem": origin["minutes"],
-                "encontrou_origem": True,
-                "pontos_origem": origin["points"],
-                "confianca_origem_pct": origin.get("confidence_pct", 0),
-                "motivo_saida_origem": origin.get("exit_reason", ""),
-                "interrupcoes_ignoradas_origem": origin.get("ignored_interruptions", 0),
-                "maior_distancia_temporaria_origem_km": origin.get("max_temp_distance_km", 0),
-                "tempo_oscilacao_absorvido_origem": origin.get("oscillation_absorbed_min", 0),
-            }
-        )
+        log.append(f"RASTREADOR: origem nao selecionada por {origem_rule or 'REGRA_INDEFINIDA'}. {origin_reason}")
+    else:
+        _apply_reference_stay_result(result, trip, "ORIGEM", selected_origin, origem_rule, origem_city, int(origem_mask.sum()), len(origin_stays), origin_reason, used_tracker_stays)
         log.append(
-            f"RASTREADOR: origem identificada em bloco continuo com {origin['points']} ponto(s), "
-            f"{origin.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); primeiro bloco na sequencia LCTE x RASTREADOR."
+            f"RASTREADOR: origem identificada por {result['metodo_localizacao_origem']} "
+            f"({origem_city}) com {selected_origin['points']} ponto(s); "
+            f"{selected_origin.get('ignored_interruptions', 0)} saida(s) ate {return_tolerance_minutes} min absorvida(s)."
         )
 
     destination_base = ordered
-    destination_mask = destino_stay_mask
-    destination_distances = destino_distances
     if result["saida_origem"]:
         destination_base = ordered[ordered["_data_dt"] > pd.Timestamp(result["saida_origem"])]
-        destination_mask = destino_mask.reindex(destination_base.index, fill_value=False)
-        destination_distances = destino_distances.reindex(destination_base.index)
-    special_reasons.extend(_apply_special_municipality_stay(result, destination_base, trip, config, log, "DESTINO", result.get("saida_origem"), used_tracker_stays))
-    dest_stays = [] if result["regra_especial_destino"] else _stays_from_mask(destination_base, destination_mask, config, split_by_reference=split_destination_by_reference, distance_meters=destination_distances)
-    if dest_stays and not result["regra_especial_destino"]:
-        available_dest_stays = _available_stays(dest_stays, trip, "DESTINO", used_tracker_stays)
-        if not available_dest_stays:
+    destino_mask, destino_signature, destino_rule, destino_city = _reference_location_mask(
+        destination_base,
+        trip.get("destino"),
+        trip.get("destinatario") or trip.get("cliente"),
+        config,
+    )
+    result["pontos_destino"] = int(destino_mask.sum()) if not destino_mask.empty else 0
+    dest_stays = _stays_from_reference_blocks(
+        destination_base,
+        destino_mask,
+        config,
+        destino_signature,
+        break_on_signature_change=destino_rule == "MUNICIPIO_CLIENTE_SEM_TOLERANCIA_CLIENTE",
+    )
+    result["qtd_blocos_municipio_destino"] = len(dest_stays)
+    destination_customer = trip.get("destinatario") or trip.get("cliente")
+    selected_dest, dest_reason = _select_reference_stay(dest_stays, trip, "DESTINO", result.get("saida_origem"), used_tracker_stays, min_stop_minutes, destination_customer)
+    if selected_dest is None:
+        if "ja vinculado" in dest_reason:
             special_reasons.append("RASTREADOR_PERMANENCIA_JA_UTILIZADA")
-            log.append("RASTREADOR: todos os blocos de destino compativeis ja foram vinculados a outra viagem LCTE.")
-        dest_stays = available_dest_stays
-    if dest_stays and not result["encontrou_destino"]:
-        min_stop_minutes = _config_number(config, "tempo_minimo_parado", 30)
-        significant_dest_stays = [stay for stay in dest_stays if float(stay.get("minutes") or 0) >= min_stop_minutes]
-        dest_candidates = significant_dest_stays or dest_stays
-        dest = min(dest_candidates, key=lambda stay: stay["arrival"])
-        _mark_stay_used(trip, "DESTINO", dest, used_tracker_stays)
-        result.update(
-            {
-                "chegada_destino": dest["arrival"],
-                "saida_destino": dest["departure"],
-                "tempo_destino": dest["minutes"],
-                "encontrou_destino": True,
-                "pontos_destino": dest["points"],
-                "confianca_destino_pct": dest.get("confidence_pct", 0),
-                "motivo_saida_destino": dest.get("exit_reason", ""),
-                "interrupcoes_ignoradas_destino": dest.get("ignored_interruptions", 0),
-                "maior_distancia_temporaria_destino_km": dest.get("max_temp_distance_km", 0),
-                "tempo_oscilacao_absorvido_destino": dest.get("oscillation_absorbed_min", 0),
-            }
-        )
+        log.append(f"RASTREADOR: destino nao selecionado por {destino_rule or 'REGRA_INDEFINIDA'}. {dest_reason}")
+    else:
+        _apply_reference_stay_result(result, trip, "DESTINO", selected_dest, destino_rule, destino_city, int(destino_mask.sum()), len(dest_stays), dest_reason, used_tracker_stays)
         log.append(
-            f"RASTREADOR: destino identificado depois da origem em bloco continuo com {dest['points']} ponto(s), "
-            f"{dest.get('ignored_interruptions', 0)} oscilacao(oes) absorvida(s); primeiro bloco de destino depois da origem."
+            f"RASTREADOR: destino identificado por {result['metodo_localizacao_destino']} "
+            f"({destino_city}) com {selected_dest['points']} ponto(s); "
+            f"{selected_dest.get('ignored_interruptions', 0)} saida(s) ate {return_tolerance_minutes} min absorvida(s)."
         )
-        if significant_dest_stays and len(significant_dest_stays) != len(dest_stays):
-            log.append("RASTREADOR: passagem curta no destino ignorada por permanencia inferior ao minimo configurado.")
-    elif not result["encontrou_origem"]:
-        log.append("RASTREADOR: destino nao foi fechado porque a origem nao iniciou a sequencia.")
+
     result["codigos_motivo_especial"] = special_reasons
     return result
-
 
 def _duration_from_control(df: pd.DataFrame, location: str, kind: str) -> tuple[datetime | None, datetime | None, float, bool]:
     if df.empty:

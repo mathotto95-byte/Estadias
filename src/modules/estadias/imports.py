@@ -206,11 +206,21 @@ LCTE_ALIASES["origem"].extend(["local da coleta"])
 LCTE_ALIASES["destino"].extend(["local da entrega"])
 LCTE_ALIASES["cte"].extend(["no conhec", "numero conhec"])
 LCTE_ALIASES["numero_viagem"].extend(["no viagem"])
+RASTREADOR_ALIASES["frota"] = ["frota"]
+RASTREADOR_ALIASES["cliente_referencia"] = ["cliente referencia", "cliente referência", "cliente referÃªncia", "cliente referÃƒÂªncia"]
+RASTREADOR_ALIASES["referencia"] = ["referencia", "referência", "referÃªncia", "referÃƒÂªncia", "descricao referencia", "descrição referência", "descriÃ§Ã£o referÃªncia", "descriÃƒÂ§ÃƒÂ£o referÃƒÂªncia"]
+RASTREADOR_ALIASES["velocidade_rastreador"] = ["velocidade do rastreador", "vel rastreador"]
+RASTREADOR_ALIASES["temperatura"] = ["temperatura do rastreador", "temperatura"]
 
-RASTREADOR_ALIASES["placa"].insert(0, "frota")
+if "frota" not in RASTREADOR_ALIASES["placa"]:
+    RASTREADOR_ALIASES["placa"].append("frota")
 RASTREADOR_ALIASES["data_hora"].extend(["data"])
 RASTREADOR_ALIASES["ignicao"].extend(["ignicao ligada", "ignição ligada"])
 RASTREADOR_ALIASES["cidade"].extend(["municipio da referencia", "município da referência"])
+RASTREADOR_ALIASES["cidade"].extend(["munic pio da refer ncia"])
+RASTREADOR_ALIASES["cliente_referencia"].extend(["cliente refer ncia"])
+RASTREADOR_ALIASES["referencia"].extend(["refer ncia"])
+RASTREADOR_ALIASES["ignicao"].extend(["igni o ligada"])
 RASTREADOR_ALIASES["endereco"].extend(["referencia", "referÃªncia", "cliente referencia", "cliente referÃªncia", "descricao referencia", "descriÃ§Ã£o referÃªncia"])
 RASTREADOR_ALIASES["cidade"].extend(["municipio referencia", "municÃ­pio referÃªncia"])
 
@@ -413,7 +423,6 @@ def import_stats(rows: list[dict[str, Any]], date_column: str) -> dict[str, Any]
         "periodo_final": max(dates) if dates else "",
     }
 
-
 def _empty_import_stats() -> dict[str, Any]:
     return {
         "placas_validas": 0,
@@ -596,16 +605,21 @@ def normalize_rastreador_row(row: dict[str, Any], columns: dict[str, str], base:
         **base,
         "placa": str(placa or ""),
         "placa_norm": normalizar_placa(placa),
+        "frota": normalizar_texto(row_value(row, columns.get("frota", ""))),
         "data": normalizar_data(data_value),
         "hora": normalizar_hora(hora_value),
         "data_hora": normalizar_data_hora(data_value, hora_value, data_hora_value),
         "latitude": normalizar_valor_monetario(row_value(row, columns.get("latitude", ""))),
         "longitude": normalizar_valor_monetario(row_value(row, columns.get("longitude", ""))),
         "endereco": str(row_value(row, columns.get("endereco", "")) or ""),
+        "cliente_referencia": normalizar_texto(row_value(row, columns.get("cliente_referencia", ""))),
+        "referencia": normalizar_texto(row_value(row, columns.get("referencia", ""))),
         "cidade": normalizar_texto(row_value(row, columns.get("cidade", ""))),
         "uf": normalizar_texto(row_value(row, columns.get("uf", ""))),
         "velocidade": normalizar_valor_monetario(row_value(row, columns.get("velocidade", ""))),
+        "velocidade_rastreador": normalizar_valor_monetario(row_value(row, columns.get("velocidade_rastreador", ""))),
         "ignicao": normalizar_texto(row_value(row, columns.get("ignicao", ""))),
+        "temperatura": normalizar_valor_monetario(row_value(row, columns.get("temperatura", ""))),
         "evento": normalizar_texto(row_value(row, columns.get("evento", ""))),
         "status": normalizar_texto(row_value(row, columns.get("status", ""))),
         "odometro": normalizar_valor_monetario(row_value(row, columns.get("odometro", ""))),
