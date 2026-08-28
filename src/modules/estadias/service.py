@@ -54,6 +54,8 @@ SPECIAL_OPERATIONAL_MUNICIPALITIES = {
 CITY_ONLY_REFERENCE_MUNICIPALITIES = {"PARANAGUA", "SANTOS"}
 CLIENT_BREAK_REFERENCE_MUNICIPALITIES = {"RONDONOPOLIS"}
 DEFAULT_REFERENCE_RETURN_TOLERANCE_MINUTES = 60
+DEFAULT_MUNICIPALITY_LOCK_MINUTES = 30
+DEFAULT_MUNICIPALITY_LOCK_MAX_SPEED_KMH = 40
 
 CROSS_DEFAULTS: dict[str, object] = {
     "lcte_id": 0,
@@ -924,6 +926,29 @@ def _finish_reference_stay(stay: dict[str, Any], ordered: pd.DataFrame) -> dict[
     return _finish_stay(stay)
 
 
+def _outside_reference_metrics(ordered: pd.DataFrame, indexes: list[Any], return_dt: pd.Timestamp | None) -> dict[str, float]:
+    if not indexes:
+        return {"minutes": 0.0, "max_speed": 0.0}
+    outside_rows = ordered.loc[indexes].dropna(subset=["_data_dt"]).sort_values("_data_dt")
+    if outside_rows.empty:
+        return {"minutes": 0.0, "max_speed": 0.0}
+    end_dt = return_dt or outside_rows["_data_dt"].iloc[-1]
+    minutes = max((end_dt - outside_rows["_data_dt"].iloc[0]).total_seconds() / 60, 0)
+    speeds = []
+    for column in ["velocidade", "velocidade_rastreador"]:
+        if column in outside_rows.columns:
+            speeds.append(pd.to_numeric(outside_rows[column], errors="coerce"))
+    speed_values = pd.concat(speeds).dropna() if speeds else pd.Series(dtype=float)
+    max_speed = float(speed_values.max()) if not speed_values.empty else 0.0
+    return {"minutes": _minutes(minutes), "max_speed": round(max_speed, 2)}
+
+
+def _absorb_reference_outside(current: dict[str, Any], metrics: dict[str, float], reason: str) -> None:
+    current["ignored_interruptions"] = int(current.get("ignored_interruptions") or 0) + 1
+    current["oscillation_absorbed_min"] = _minutes(float(current.get("oscillation_absorbed_min") or 0) + float(metrics.get("minutes") or 0))
+    current["exit_reason"] = reason
+
+
 def _stays_from_reference_blocks(
     df: pd.DataFrame,
     mask: pd.Series,
@@ -940,20 +965,24 @@ def _stays_from_reference_blocks(
     signature = signature.reindex(ordered.index, fill_value="").fillna("").astype(str).map(normalize_text)
     min_points = int(_config_number(config, "min_pontos_permanencia", 1))
     grace_minutes = _config_number(config, "tolerancia_retorno_referencia_minutos", DEFAULT_REFERENCE_RETURN_TOLERANCE_MINUTES)
+    municipality_lock_minutes = _config_number(config, "trava_municipio_intervalo_minutos", DEFAULT_MUNICIPALITY_LOCK_MINUTES)
+    municipality_lock_speed = _config_number(config, "trava_municipio_velocidade_max_kmh", DEFAULT_MUNICIPALITY_LOCK_MAX_SPEED_KMH)
 
     stays: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     outside_start: pd.Timestamp | None = None
     outside_count = 0
+    outside_indexes: list[Any] = []
 
     def close_current(reason: str) -> None:
-        nonlocal current, outside_start, outside_count
+        nonlocal current, outside_start, outside_count, outside_indexes
         if current is not None and int(current.get("points") or 0) >= min_points:
             current["exit_reason"] = reason
             stays.append(_finish_reference_stay(current, ordered))
         current = None
         outside_start = None
         outside_count = 0
+        outside_indexes = []
 
     for idx, row in ordered.iterrows():
         current_dt = row["_data_dt"]
@@ -972,12 +1001,24 @@ def _stays_from_reference_blocks(
                 current["reference_signature"] = row_signature
                 current["row_indexes"] = []
             elif outside_start is not None:
-                outside_minutes = max((current_dt - outside_start).total_seconds() / 60, 0)
-                if outside_minutes <= grace_minutes:
-                    current["ignored_interruptions"] = int(current.get("ignored_interruptions") or 0) + 1
-                    current["oscillation_absorbed_min"] = _minutes(float(current.get("oscillation_absorbed_min") or 0) + outside_minutes)
+                metrics = _outside_reference_metrics(ordered, outside_indexes, current_dt)
+                outside_minutes = float(metrics.get("minutes") or 0)
+                max_speed = float(metrics.get("max_speed") or 0)
+                municipality_lock = outside_minutes <= municipality_lock_minutes and max_speed <= municipality_lock_speed
+                if municipality_lock:
+                    _absorb_reference_outside(
+                        current,
+                        metrics,
+                        f"trava municipio: oscilacao ignorada ({outside_minutes:g} min, velocidade maxima {max_speed:g} km/h)",
+                    )
                     outside_start = None
                     outside_count = 0
+                    outside_indexes = []
+                elif outside_minutes <= grace_minutes:
+                    _absorb_reference_outside(current, metrics, f"retorno a referencia em ate {int(grace_minutes)} min")
+                    outside_start = None
+                    outside_count = 0
+                    outside_indexes = []
                 else:
                     close_current(f"fora da referencia por mais de {int(grace_minutes)} min")
                     current = _new_stay(current_dt)
@@ -990,6 +1031,7 @@ def _stays_from_reference_blocks(
             if outside_start is None:
                 outside_start = current_dt
             outside_count += 1
+            outside_indexes.append(idx)
 
     if current is not None and int(current.get("points") or 0) >= min_points:
         if outside_start is not None and outside_count:

@@ -1284,6 +1284,8 @@ def create_modular_tables(conn) -> None:
         "saida_posicoes_consecutivas": "Quantidade minima de posicoes consecutivas fora para confirmar saida.",
         "saida_velocidade_media_kmh": "Velocidade media minima para confirmar deslocamento apos saida.",
         "tolerancia_retorno_referencia_minutos": "Tempo maximo fora do municipio/cliente referencia antes de encerrar o bloco.",
+        "trava_municipio_intervalo_minutos": "Intervalo maximo para ignorar salto temporario de municipio do rastreador.",
+        "trava_municipio_velocidade_max_kmh": "Velocidade maxima para tratar salto temporario de municipio como perda de sinal.",
         "limite_agendamento_minutos": "Limite operacional para diferenca de agendamento.",
     }.items():
         conn.execute(
