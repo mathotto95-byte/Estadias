@@ -293,6 +293,13 @@ def _location_match_text(left: Any, right: Any) -> bool:
     return bool(left_tokens and any(token in right_text for token in left_tokens))
 
 
+def _location_token_mask(series: pd.Series, expected_location: Any) -> pd.Series:
+    expected_tokens = _location_tokens(expected_location)
+    if not expected_tokens:
+        return pd.Series([False] * len(series), index=series.index)
+    return series.fillna("").astype(str).map(lambda value: expected_tokens.issubset(_location_tokens(value)))
+
+
 def _location_mask(df: pd.DataFrame, location: str, columns: list[str]) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=bool)
@@ -630,7 +637,7 @@ def _municipality_mask(df: pd.DataFrame, city: str, uf: str) -> pd.Series:
     city_text = df.get("cidade", pd.Series("", index=df.index)).fillna("").astype(str).map(normalize_text)
     uf_text = df.get("uf", pd.Series("", index=df.index)).fillna("").astype(str).map(normalize_text)
     text = df.apply(lambda row: _row_location_text(row, ["endereco", "cidade", "uf", "evento", "status"]), axis=1)
-    city_ok = city_text.str.contains(city, regex=False) | text.str.contains(city, regex=False)
+    city_ok = _location_token_mask(city_text, city) | _location_token_mask(text, city) | city_text.str.contains(city, regex=False) | text.str.contains(city, regex=False)
     uf_ok = uf_text.eq("") | uf_text.eq(uf) | text.str.contains(f" {uf} ", regex=False) | text.str.endswith(f" {uf}")
     return (city_ok & uf_ok).reindex(df.index, fill_value=False)
 
@@ -864,7 +871,12 @@ def _reference_location_mask(df: pd.DataFrame, location: Any, expected_customer:
 
     city_text = _reference_text_series(df, ["cidade"])
     fallback_text = _reference_text_series(df, ["endereco", "referencia", "evento", "status"])
-    city_mask = city_text.str.contains(city, regex=False) | fallback_text.str.contains(city, regex=False)
+    city_mask = (
+        _location_token_mask(city_text, city)
+        | _location_token_mask(fallback_text, city)
+        | city_text.str.contains(city, regex=False)
+        | fallback_text.str.contains(city, regex=False)
+    )
     if uf_value and "uf" in df.columns:
         uf_text = df["uf"].fillna("").astype(str).map(normalize_text)
         city_mask &= uf_text.eq("") | uf_text.eq(uf_value) | fallback_text.str.contains(f" {uf_value} ", regex=False) | fallback_text.str.endswith(f" {uf_value}")
