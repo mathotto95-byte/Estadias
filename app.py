@@ -359,7 +359,7 @@ def render_backup_page() -> None:
         try:
             result = restore_json_bytes(uploaded.getvalue(), mode)
             st.success(f"Banco importado. Restaurados: {result.get('restored', 0)} | Ignorados: {result.get('ignored', 0)}")
-            st.caption("Depois de importar, use o botao lateral Enviar backup para GitHub.")
+            st.caption("Depois de importar, use o botao lateral Enviar backup para GitHub. Para aplicar regras novas, reimporte LCTE e RASTREADOR e use Recalcular regras no Cruzamento.")
             st.rerun()
         except Exception as exc:
             st.error(f"Nao foi possivel importar o banco: {exc}")

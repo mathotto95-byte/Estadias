@@ -10,6 +10,7 @@ from src.dashboards.components import metric_grid, render_dataframe
 from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_control, import_lcte_ipiranga, import_rastreador_files
 from src.modules.estadias.repository import (
     CONTROL_NORMALIZED_TABLE,
+    CROSS_TABLE,
     LCTE_NORMALIZED_TABLE,
     RASTREADOR_NORMALIZED_TABLE,
     clear_estadias_imported_database,
@@ -1782,11 +1783,30 @@ def render_cross_page(usuario: str) -> None:
     col_title, col_plate, col_update = st.columns([2.2, 1.2, 1])
     col_title.title("CRUZAMENTO LCTE x CONTROL x RASTREADOR")
     lcte_count = table_count(LCTE_NORMALIZED_TABLE)
+    rastreador_count = table_count(RASTREADOR_NORMALIZED_TABLE)
+    cross_count = table_count(CROSS_TABLE)
     plate_options = ["TODAS", *select_distinct(LCTE_NORMALIZED_TABLE, "placa_norm", 3000)]
     plate_update = col_plate.selectbox("Atualizar placa", plate_options, key="estadias_cross_update_placa")
     selected_plate = "" if plate_update == "TODAS" else str(plate_update or "").strip()
-    button_label = "ATUALIZAR PLACA" if selected_plate else "ATUALIZAR TODAS"
-    if col_update.button(button_label, type="primary", use_container_width=True, disabled=not lcte_count):
+    button_label = "RECALCULAR PLACA" if selected_plate else "RECALCULAR REGRAS"
+    can_recalculate = bool(lcte_count and rastreador_count)
+    if not can_recalculate and cross_count:
+        missing = []
+        if not lcte_count:
+            missing.append("LCTE")
+        if not rastreador_count:
+            missing.append("RASTREADOR")
+        st.warning(
+            "Existe resultado importado por JSON, mas nao ha base suficiente para recalcular com as regras atuais. "
+            f"Reimporte {' e '.join(missing)} para liberar o botao de recalculo."
+        )
+    if col_update.button(
+        button_label,
+        type="primary",
+        use_container_width=True,
+        disabled=not can_recalculate,
+        help="Reprocessa o cruzamento usando LCTE como base e rastreador como permanencia. O JSON de resultado sozinho nao contem as posicoes do rastreador.",
+    ):
         progress_bar = st.progress(0)
         progress_text = st.empty()
 
