@@ -18,6 +18,9 @@ from estadias_app.github_backup import (
     github_backup_configured,
     github_diagnostic,
     github_settings,
+    import_backup_json_bytes,
+    imported_database_counts,
+    imported_database_tables,
     prune_history,
     restore_from_github_if_empty,
     restore_json_bytes,
@@ -190,10 +193,12 @@ def _render_github_sidebar() -> None:
         st.rerun()
     st.sidebar.divider()
     st.sidebar.subheader("Backup GitHub")
-    st.sidebar.caption("Destino: arquivo JSON no GitHub, nao Release.")
+    st.sidebar.caption("Destino: arquivos JSON no GitHub, nao Release.")
+    st.sidebar.caption("Automatico salva resultados; manual salva resultados + importacoes.")
     if github_backup_configured():
         st.sidebar.caption(f"Repo: {settings['repository']} | Branch: {settings['branch']}")
-        st.sidebar.caption(f"Arquivo: {settings['latest_path']}")
+        st.sidebar.caption(f"Resultado: {settings['latest_path']}")
+        st.sidebar.caption(f"Importacoes: {settings['imports_path']}")
     else:
         st.sidebar.warning("GitHub backup nao configurado.")
     st.sidebar.caption(f"Token: {diagnostic.get('token_masked')} | {diagnostic.get('token_length', 0)} caracteres")
@@ -263,17 +268,21 @@ def _render_status() -> None:
 
 def _database_zip() -> bytes:
     tables = all_database_tables()
+    import_tables = imported_database_tables()
     output = BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         archive.writestr("estadias_resultado_backup.json", backup_json_bytes())
+        archive.writestr("estadias_importacoes_backup.json", import_backup_json_bytes())
         archive.writestr("estadias_resultado_backup.xlsx", dataframe_to_excel(tables))
+        archive.writestr("estadias_importacoes_backup.xlsx", dataframe_to_excel(import_tables))
         archive.writestr(
             "manifesto.json",
             json.dumps(
                 {
                     "gerado_em": brasilia_now_iso(),
-                    "tabelas": {name: int(len(df)) for name, df in tables.items()},
-                    "observacao": "Backup enxuto: contem resultados, conclusoes e configuracoes. Bases importadas LCTE/CONTROL/RASTREADOR ficam fora para reduzir tamanho.",
+                    "resultado": {name: int(len(df)) for name, df in tables.items()},
+                    "importacoes": {name: int(len(df)) for name, df in import_tables.items()},
+                    "observacao": "Contem resultado do painel e bases normalizadas importadas para permitir recalculo posterior.",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -283,16 +292,19 @@ def _database_zip() -> bytes:
 
 
 def render_backup_page() -> None:
-    st.subheader("Backup e recuperacao dos resultados")
-    st.caption("Backup enxuto: salva resultados, conclusoes, auditoria e configuracoes. Planilhas importadas LCTE/CONTROL/RASTREADOR nao entram no backup.")
+    st.subheader("Backup e recuperacao")
+    st.caption("O backup salva dois JSONs: resultado do painel e bases normalizadas importadas para recalculo futuro.")
     tables = all_database_tables()
+    import_counts = imported_database_counts()
     total = sum(len(df) for df in tables.values())
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Tabelas", len(tables))
-    c2.metric("Registros", total)
-    c3.metric("Formato seguro", "JSON")
+    import_total = sum(import_counts.values())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Tabelas resultado", len(tables))
+    c2.metric("Registros resultado", total)
+    c3.metric("Tabelas importacao", len(import_counts))
+    c4.metric("Registros importacao", import_total)
     stamp = brasilia_now().strftime("%Y%m%d_%H%M%S")
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     col1.download_button("Baixar resultado JSON", backup_json_bytes(), f"estadias_resultado_{stamp}.json", "application/json", use_container_width=True)
     col2.download_button(
         "Baixar resultado Excel",
@@ -301,7 +313,32 @@ def render_backup_page() -> None:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
-    col3.download_button("Baixar resultado ZIP", _database_zip(), f"backup_resultado_estadias_{stamp}.zip", "application/zip", use_container_width=True)
+
+    prep1, prep2 = st.columns(2)
+    if prep1.button("Preparar JSON das importacoes", use_container_width=True, disabled=import_total <= 0):
+        st.session_state["estadias_importacoes_backup_bytes"] = import_backup_json_bytes()
+        st.session_state["estadias_importacoes_backup_stamp"] = stamp
+    if prep2.button("Preparar ZIP completo", use_container_width=True, disabled=(total + import_total) <= 0):
+        st.session_state["estadias_zip_backup_bytes"] = _database_zip()
+        st.session_state["estadias_zip_backup_stamp"] = stamp
+    prepared_imports = st.session_state.get("estadias_importacoes_backup_bytes")
+    if prepared_imports:
+        st.download_button(
+            "Baixar importacoes JSON preparado",
+            prepared_imports,
+            f"estadias_importacoes_{st.session_state.get('estadias_importacoes_backup_stamp') or stamp}.json",
+            "application/json",
+            use_container_width=True,
+        )
+    prepared_zip = st.session_state.get("estadias_zip_backup_bytes")
+    if prepared_zip:
+        st.download_button(
+            "Baixar ZIP completo preparado",
+            prepared_zip,
+            f"backup_completo_estadias_{st.session_state.get('estadias_zip_backup_stamp') or stamp}.zip",
+            "application/zip",
+            use_container_width=True,
+        )
 
     st.divider()
     st.subheader("Limpar residuos das importacoes")
@@ -346,20 +383,21 @@ def render_backup_page() -> None:
             st.rerun()
 
     st.divider()
-    st.subheader("Importar resultados")
-    uploaded = st.file_uploader("Arquivo JSON de backup de resultados", type=["json"], key="database_backup_upload")
+    st.subheader("Importar backup JSON")
+    uploaded = st.file_uploader("Arquivo JSON de resultado ou importacoes", type=["json"], key="database_backup_upload")
     mode_label = st.radio("Modo de importacao", ["Mesclar com banco atual", "Substituir banco atual"], horizontal=True)
     mode = "replace" if mode_label.startswith("Substituir") else "merge"
     confirm = ""
     if mode == "replace":
-        st.warning("Substituir apaga o banco atual antes de importar. Backup vazio nao substitui dados existentes.")
+        st.warning("Substituir apaga somente o grupo do JSON importado: resultado ou importacoes. Backup vazio nao substitui dados existentes.")
         confirm = st.text_input("Digite RESTAURAR para liberar a substituicao")
     disabled = uploaded is None or (mode == "replace" and confirm.strip().upper() != "RESTAURAR")
     if st.button("Importar banco", type="primary", use_container_width=True, disabled=disabled):
         try:
             result = restore_json_bytes(uploaded.getvalue(), mode)
-            st.success(f"Banco importado. Restaurados: {result.get('restored', 0)} | Ignorados: {result.get('ignored', 0)}")
-            st.caption("Depois de importar, use o botao lateral Enviar backup para GitHub. Para aplicar regras novas, reimporte LCTE e RASTREADOR e use Recalcular regras no Cruzamento.")
+            schema_label = "importacoes" if result.get("schema") == "estadias_importacoes_backup_v1" else "resultados"
+            st.success(f"Backup de {schema_label} importado. Restaurados: {result.get('restored', 0)} | Ignorados: {result.get('ignored', 0)}")
+            st.caption("Depois de importar resultado e importacoes, use Recalcular regras no Cruzamento para aplicar a logica atual.")
             st.rerun()
         except Exception as exc:
             st.error(f"Nao foi possivel importar o banco: {exc}")
