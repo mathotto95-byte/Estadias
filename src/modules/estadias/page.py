@@ -437,6 +437,7 @@ def _with_estadia_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     view["Estadia"] = horas.gt(0).map(lambda value: "Estadia" if value else "Sem estadia")
     view["Relatorio CONTROL"] = pd.to_numeric(control_flag, errors="coerce").fillna(0).astype(int).eq(1).map(lambda value: "OK" if value else "FALTANDO")
     view["Relatorio Rastreador"] = pd.to_numeric(tracker_flag, errors="coerce").fillna(0).astype(int).eq(1).map(lambda value: "OK" if value else "FALTANDO")
+    view["Data Emissao NF"] = _safe_series(view, "data_emissao_nf").map(_format_datetime_display)
     view["Tipo ponto origem"] = "ORIGEM"
     view["Local origem estadia"] = view["origem"] if "origem" in view.columns else ""
     view["Tempo na origem (min)"] = view["tempo_origem_min"] if "tempo_origem_min" in view.columns else 0
@@ -705,6 +706,7 @@ def render_lcte_panel() -> None:
 
 
 DATE_DISPLAY_COLUMNS = [
+    "data_emissao_nf",
     "data_operacao",
     "data_hora_carga",
     "data_inicio_viagem_referencia",
@@ -735,6 +737,7 @@ PANEL_DEFAULT_COLUMNS = {
         "Relatorio CONTROL",
         "Relatorio Rastreador",
         "Notas",
+        "Data Emissao NF",
         "Placa",
         "Origem",
         "Destino",
@@ -755,6 +758,7 @@ PANEL_DEFAULT_COLUMNS = {
         "cte",
         "nf",
         "placa_norm",
+        "data_emissao_nf",
         "data_inicio_viagem_referencia",
         "origem",
         "destino",
@@ -774,6 +778,7 @@ PANEL_DEFAULT_COLUMNS = {
         "cte",
         "nf",
         "placa_norm",
+        "data_emissao_nf",
         "data_inicio_viagem_referencia",
         "origem",
         "destino",
@@ -792,6 +797,7 @@ PANEL_DEFAULT_COLUMNS = {
         "cte",
         "nf",
         "placa_norm",
+        "data_emissao_nf",
         "data_inicio_viagem_referencia",
         "cliente",
         "tipo_conclusao",
@@ -812,6 +818,7 @@ PANEL_DEFAULT_COLUMNS = {
         "cte",
         "nf",
         "placa_norm",
+        "data_emissao_nf",
         "data_operacao",
         "data_hora_carga",
         "origem",
@@ -1451,6 +1458,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
         "nf",
         "cliente",
         "motorista",
+        "data_emissao_nf",
         "data_inicio_viagem_referencia",
         "data_hora_carga",
         "painel_atual",
@@ -1533,6 +1541,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Relatorio CONTROL": "OK" if encontrou_control else "FALTANDO",
                     "Relatorio Rastreador": "OK" if encontrou_rastreador else "FALTANDO",
                     "Notas": row.get("nf") or row.get("cte") or "",
+                    "Data Emissao NF": _format_datetime_display(row.get("data_emissao_nf")),
                     "Placa": row.get("placa_norm") or "",
                     "Origem": row.get("origem") or "",
                     "Destino": row.get("destino") or "",
@@ -1567,6 +1576,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "nf": row.get("nf") or "",
                     "cliente": row.get("cliente") or "",
                     "motorista": row.get("motorista") or "",
+                    "data_emissao_nf": row.get("data_emissao_nf") or "",
                     "data_inicio_viagem_referencia": row.get("data_inicio_viagem_referencia") or row.get("data_hora_carga") or row.get("data_operacao") or "",
                     "data_hora_carga": row.get("data_hora_carga") or "",
                     "painel_atual": row.get("painel_atual") or "",
