@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -56,6 +57,9 @@ from src.modules.estadias.teste_lcte_rastreador import (
 )
 from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now_iso
+
+
+RODO_WALL_LOGO_PATH = Path(__file__).resolve().parents[3] / "assets" / "rodo_wall_logo.png"
 
 
 def _duplicate_mode(role: str, key: str) -> str:
@@ -261,8 +265,8 @@ def _estadia_period_specs(df: pd.DataFrame) -> list[dict[str, object]]:
             "destino": row.get("destino"),
         }
         for tipo, local_col, uf_col, arrival_col, departure_col, allowance_col, stay_col in [
-            ("CARGA", "origem", "uf_origem", "chegada_origem", "saida_origem", "franquia_carga_min", "estadia_carga_min"),
-            ("DESCARGA", "destino", "uf_destino", "chegada_destino", "saida_destino", "franquia_descarga_min", "estadia_descarga_min"),
+            ("ORIGEM", "origem", "uf_origem", "chegada_origem", "saida_origem", "franquia_carga_min", "estadia_carga_min"),
+            ("DESTINO", "destino", "uf_destino", "chegada_destino", "saida_destino", "franquia_descarga_min", "estadia_descarga_min"),
         ]:
             stay_min = float(pd.to_numeric(pd.Series([row.get(stay_col)]), errors="coerce").fillna(0).iloc[0])
             chegada = _period_query_datetime(row.get(arrival_col))
@@ -285,24 +289,63 @@ def _estadia_period_specs(df: pd.DataFrame) -> list[dict[str, object]]:
     return specs
 
 
-def _tracker_positions_pdf(df: pd.DataFrame) -> bytes:
+def _estadia_pdf_option_label(spec: dict[str, object], index: int) -> str:
+    return (
+        f"{index}. {spec.get('tipo') or '-'} | Placa {spec.get('placa') or '-'} | "
+        f"NF {spec.get('nf') or '-'} | Local {spec.get('local') or '-'}"
+    )
+
+
+def _sample_positions_30_minutes(positions: pd.DataFrame, limit: int = 500) -> pd.DataFrame:
+    if positions.empty:
+        return positions
+    display = positions.copy()
+    display["_data_dt"] = pd.to_datetime(display.get("data_hora"), errors="coerce")
+    display = display[display["_data_dt"].notna()].sort_values("_data_dt")
+    if display.empty:
+        return positions.head(limit).copy()
+    display["_bucket_30min"] = display["_data_dt"].dt.floor("30min")
+    sampled = display.drop_duplicates("_bucket_30min", keep="first")
+    last_row = display.tail(1)
+    if not last_row.empty and last_row.index[0] not in sampled.index:
+        sampled = pd.concat([sampled, last_row], ignore_index=False)
+    return sampled.head(limit).drop(columns=["_data_dt", "_bucket_30min"], errors="ignore")
+
+
+def _format_speed(value: object) -> str:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return str(value or "")
+    speed = float(numeric)
+    if speed.is_integer():
+        return str(int(speed))
+    return f"{speed:.1f}".replace(".", ",")
+
+
+def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None = None) -> bytes:
     from html import escape
 
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
+    from reportlab.platypus import Image as ReportLabImage
     from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     output = BytesIO()
     doc = SimpleDocTemplate(output, pagesize=landscape(A4), leftMargin=0.8 * cm, rightMargin=0.8 * cm, topMargin=0.8 * cm, bottomMargin=0.8 * cm)
     styles = getSampleStyleSheet()
-    elements: list[object] = [
-        Paragraph("Posicoes do Rastreador por Periodo de Estadia", styles["Title"]),
-        Paragraph("Relatorio gerado a partir das viagens filtradas no painel principal.", styles["Normal"]),
-        Spacer(1, 0.3 * cm),
-    ]
+    title_style = ParagraphStyle("PdfTitle", parent=styles["Title"], alignment=0, fontSize=18, leading=22, textColor=colors.HexColor("#020d3f"))
+    header_cells: list[object] = [Paragraph("Relatório de Posições Rastreador", title_style), ""]
+    if RODO_WALL_LOGO_PATH.exists():
+        header_cells[1] = ReportLabImage(str(RODO_WALL_LOGO_PATH), width=4.2 * cm, height=1.4 * cm)
+    header = Table([header_cells], colWidths=[21.0 * cm, 5.0 * cm])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    elements: list[object] = [header, Spacer(1, 0.35 * cm)]
     specs = _estadia_period_specs(df)
+    if selected_indexes is not None:
+        selected_set = {int(index) for index in selected_indexes if 0 <= int(index) < len(specs)}
+        specs = [spec for index, spec in enumerate(specs) if index in selected_set]
     safe = lambda value, default="-": escape(str(value if value not in [None, ""] else default))
     if not specs:
         elements.append(Paragraph("Nenhum periodo de estadia localizado para exportacao.", styles["Normal"]))
@@ -310,16 +353,13 @@ def _tracker_positions_pdf(df: pd.DataFrame) -> bytes:
         if idx > 1:
             elements.append(PageBreak())
         header = (
-            f"{idx}. {safe(spec.get('tipo'))} | Placa {safe(spec.get('placa'))} | "
-            f"CT-e {safe(spec.get('cte'))} | NF {safe(spec.get('nf'))}"
+            f"Estadia: {safe(spec.get('tipo'))} | Placa: {safe(spec.get('placa'))} | "
+            f"Nota Fiscal: {safe(spec.get('nf'))}"
         )
         elements.append(Paragraph(header, styles["Heading2"]))
         details = (
-            f"Local: {safe(spec.get('local'))} / {safe(spec.get('uf'))}<br/>"
-            f"Origem/Destino viagem: {safe(spec.get('origem'))} &gt; {safe(spec.get('destino'))}<br/>"
-            f"Cliente: {safe(spec.get('cliente'))} | Motorista: {safe(spec.get('motorista'))}<br/>"
-            f"Chegada: {_format_export_datetime(spec.get('chegada'))} | Inicio estadia: {spec.get('inicio_estadia') or '-'} | Saida: {_format_export_datetime(spec.get('saida'))}<br/>"
-            f"Franquia: {spec.get('franquia_min') or 0} min | Tempo de estadia: {_format_minutes_value(spec.get('estadia_min'))}"
+            f"Local: {safe(spec.get('local'))}<br/>"
+            f"Origem/Destino viagem: {safe(spec.get('origem'))} &gt; {safe(spec.get('destino'))}"
         )
         elements.append(Paragraph(details, styles["Normal"]))
         elements.append(Spacer(1, 0.2 * cm))
@@ -327,21 +367,19 @@ def _tracker_positions_pdf(df: pd.DataFrame) -> bytes:
         if positions.empty:
             elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
             continue
-        display = positions.head(500).copy()
-        data = [["Data/Hora", "Cidade", "UF", "Latitude", "Longitude", "Vel.", "Endereco/Referencia"]]
+        display = _sample_positions_30_minutes(positions, 500)
+        data = [["Placa", "Data e hora (intervalo 30 min)", "Municipio", "Estado", "Velocidade"]]
         for _, point in display.iterrows():
             data.append(
                 [
+                    str(point.get("placa_norm") or spec.get("placa") or "")[:12],
                     _format_export_datetime(point.get("data_hora")),
-                    str(point.get("cidade") or "")[:24],
+                    str(point.get("cidade") or "")[:42],
                     str(point.get("uf") or "")[:3],
-                    str(point.get("latitude") or ""),
-                    str(point.get("longitude") or ""),
-                    str(point.get("velocidade") or ""),
-                    Paragraph(escape(str(point.get("endereco") or "")[:140]), styles["BodyText"]),
+                    _format_speed(point.get("velocidade") or point.get("velocidade_rastreador")),
                 ]
             )
-        table = Table(data, colWidths=[3.0 * cm, 3.0 * cm, 1.0 * cm, 2.2 * cm, 2.2 * cm, 1.2 * cm, 12.5 * cm], repeatRows=1)
+        table = Table(data, colWidths=[3.0 * cm, 5.0 * cm, 11.0 * cm, 2.0 * cm, 3.0 * cm], repeatRows=1)
         table.setStyle(
             TableStyle(
                 [
@@ -356,7 +394,7 @@ def _tracker_positions_pdf(df: pd.DataFrame) -> bytes:
         )
         elements.append(table)
         if len(positions) > len(display):
-            elements.append(Paragraph(f"Exibidas 500 de {len(positions)} posicoes deste periodo para manter o PDF leve.", styles["Italic"]))
+            elements.append(Paragraph(f"Posicoes resumidas em intervalos de 30 minutos. Exibidas {len(display)} de {len(positions)} posicoes deste periodo.", styles["Italic"]))
     if len(specs) > 80:
         elements.append(PageBreak())
         elements.append(Paragraph(f"Relatorio limitado aos primeiros 80 periodos de estadia filtrados. Total filtrado: {len(specs)}.", styles["Normal"]))
@@ -1866,7 +1904,7 @@ def render_cross_page(usuario: str) -> None:
     filtered = _apply_validation_card(filtered, validation_card)
     filtered = _apply_situation_card(filtered, situation_card)
 
-    col_a, col_b, col_c, col_d, col_e = st.columns([2, 1, 1, 1, 1])
+    col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
     table = filtered[[column for column in visible_columns if column in filtered.columns]] if not filtered.empty else filtered
@@ -1886,20 +1924,31 @@ def render_cross_page(usuario: str) -> None:
         use_container_width=True,
         disabled=filtered.empty,
     )
+    col_d.button("Limpar filtros", use_container_width=True, on_click=_clear_cross_summary_filters)
+
     filtered_ids = set(pd.to_numeric(filtered.get("lcte_id", pd.Series(dtype=int)), errors="coerce").dropna().astype(int).tolist()) if not filtered.empty else set()
     pdf_base = cross[pd.to_numeric(cross.get("lcte_id", pd.Series(dtype=int)), errors="coerce").fillna(0).astype(int).isin(filtered_ids)].copy() if filtered_ids and "lcte_id" in cross.columns else pd.DataFrame()
-    period_count = len(_estadia_period_specs(pdf_base))
-    if period_count:
-        col_d.download_button(
-            "PDF posicoes",
-            _tracker_positions_pdf(pdf_base),
-            "posicoes_rastreador_periodos_estadia.pdf",
-            "application/pdf",
-            use_container_width=True,
-        )
+    pdf_specs = _estadia_period_specs(pdf_base)
+    if pdf_specs:
+        with st.expander("PDF de posicoes do rastreador", expanded=False):
+            pdf_selected = st.multiselect(
+                "Selecione as estadias para baixar",
+                list(range(len(pdf_specs))),
+                default=[0],
+                format_func=lambda index: _estadia_pdf_option_label(pdf_specs[index], index + 1),
+                key="estadias_pdf_periodos_selecionados",
+            )
+            pdf_bytes = _tracker_positions_pdf(pdf_base, pdf_selected) if pdf_selected else b""
+            st.download_button(
+                "Baixar PDF selecionado",
+                pdf_bytes,
+                "relatorio_posicoes_rastreador.pdf",
+                "application/pdf",
+                use_container_width=True,
+                disabled=not pdf_selected,
+            )
     else:
-        col_d.button("PDF posicoes", use_container_width=True, disabled=True)
-    col_e.button("Limpar filtros", use_container_width=True, on_click=_clear_cross_summary_filters)
+        st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
 
     render_dataframe(table, height=620, max_rows=2000)
     _render_quick_conclusion(filtered, usuario)
