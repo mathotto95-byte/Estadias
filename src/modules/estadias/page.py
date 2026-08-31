@@ -296,6 +296,24 @@ def _estadia_pdf_option_label(spec: dict[str, object], index: int) -> str:
     )
 
 
+def _estadia_pdf_options_frame(specs: list[dict[str, object]]) -> pd.DataFrame:
+    rows = []
+    for index, spec in enumerate(specs, start=1):
+        rows.append(
+            {
+                "Exportar PDF": index == 1,
+                "Linha": index,
+                "Estadia": spec.get("tipo") or "",
+                "Placa": spec.get("placa") or "",
+                "Nota Fiscal": spec.get("nf") or "",
+                "Local": spec.get("local") or "",
+                "Origem": spec.get("origem") or "",
+                "Destino": spec.get("destino") or "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _sample_positions_30_minutes(positions: pd.DataFrame, limit: int = 500) -> pd.DataFrame:
     if positions.empty:
         return positions
@@ -1930,13 +1948,26 @@ def render_cross_page(usuario: str) -> None:
     pdf_base = cross[pd.to_numeric(cross.get("lcte_id", pd.Series(dtype=int)), errors="coerce").fillna(0).astype(int).isin(filtered_ids)].copy() if filtered_ids and "lcte_id" in cross.columns else pd.DataFrame()
     pdf_specs = _estadia_period_specs(pdf_base)
     if pdf_specs:
-        with st.expander("PDF de posicoes do rastreador", expanded=False):
-            pdf_selected = st.multiselect(
-                "Selecione as estadias para baixar",
-                list(range(len(pdf_specs))),
-                default=[0],
-                format_func=lambda index: _estadia_pdf_option_label(pdf_specs[index], index + 1),
-                key="estadias_pdf_periodos_selecionados",
+        with st.expander("PDF de posicoes do rastreador", expanded=True):
+            pdf_options = _estadia_pdf_options_frame(pdf_specs)
+            edited_pdf_options = st.data_editor(
+                pdf_options,
+                hide_index=True,
+                use_container_width=True,
+                height=min(420, 70 + (len(pdf_options) + 1) * 36),
+                num_rows="fixed",
+                column_config={
+                    "Exportar PDF": st.column_config.CheckboxColumn("Exportar PDF", default=False),
+                    "Linha": st.column_config.NumberColumn("Linha", disabled=True),
+                },
+                disabled=[column for column in pdf_options.columns if column != "Exportar PDF"],
+                key="estadias_pdf_periodos_flags",
+            )
+            pdf_selected = (
+                edited_pdf_options.loc[edited_pdf_options["Exportar PDF"].fillna(False), "Linha"]
+                .astype(int)
+                .sub(1)
+                .tolist()
             )
             pdf_bytes = _tracker_positions_pdf(pdf_base, pdf_selected) if pdf_selected else b""
             st.download_button(
