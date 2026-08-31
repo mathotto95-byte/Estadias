@@ -2013,14 +2013,15 @@ def render_cross_page(usuario: str) -> None:
                 .tolist()
             )
             multiple_pdfs = len(pdf_selected) > 1
+            download_stamp = re.sub(r"\D+", "", brasilia_now_iso())[:14] or "atual"
             if multiple_pdfs:
                 download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
-                download_name = "relatorios_posicoes_rastreador.zip"
+                download_name = f"relatorios_posicoes_rastreador_{download_stamp}.zip"
                 mime_type = "application/zip"
                 button_label = "Baixar PDFs selecionados"
             else:
                 download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected) if pdf_selected else b""
-                download_name = "relatorio_posicoes_rastreador.pdf"
+                download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
                 mime_type = "application/pdf"
                 button_label = "Baixar PDF selecionado"
             st.download_button(
