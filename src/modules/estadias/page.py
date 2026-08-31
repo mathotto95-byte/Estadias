@@ -60,7 +60,7 @@ from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now_iso
 
 
-RODO_WALL_LOGO_PATH = Path(__file__).resolve().parents[3] / "assets" / "rodo_wall_logo.png"
+RODO_WALL_PDF_BACKGROUND_PATH = Path(__file__).resolve().parents[3] / "assets" / "rodo_wall_pdf_background.png"
 
 
 def _duplicate_mode(role: str, key: str) -> str:
@@ -362,18 +362,28 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
-    from reportlab.platypus import Image as ReportLabImage
     from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     output = BytesIO()
-    doc = SimpleDocTemplate(output, pagesize=A4, leftMargin=0.8 * cm, rightMargin=0.8 * cm, topMargin=0.8 * cm, bottomMargin=0.8 * cm)
+    doc = SimpleDocTemplate(output, pagesize=A4, leftMargin=0.8 * cm, rightMargin=0.8 * cm, topMargin=6.0 * cm, bottomMargin=0.8 * cm)
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("PdfTitle", parent=styles["Title"], alignment=0, fontSize=15, leading=18, textColor=colors.HexColor("#020d3f"))
-    header_cells: list[object] = [Paragraph("Relatório de Posições Rastreador", title_style), ""]
-    if RODO_WALL_LOGO_PATH.exists():
-        header_cells[1] = ReportLabImage(str(RODO_WALL_LOGO_PATH), width=3.6 * cm, height=1.2 * cm)
-    header = Table([header_cells], colWidths=[13.8 * cm, 4.0 * cm])
-    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    navy = colors.HexColor("#020d3f")
+    gold = colors.HexColor("#c49a12")
+    title_style = ParagraphStyle("PdfTitle", parent=styles["Title"], alignment=1, fontSize=14, leading=18, textColor=gold)
+    header_cells: list[object] = [Paragraph("Relatorio de Posicoes Rastreador", title_style)]
+    header = Table([header_cells], colWidths=[17.8 * cm])
+    header.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), navy),
+                ("TEXTCOLOR", (0, 0), (-1, -1), gold),
+                ("BOX", (0, 0), (-1, -1), 0.5, gold),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
     elements: list[object] = [header, Spacer(1, 0.35 * cm)]
     specs = _estadia_period_specs(df)
     if selected_indexes is not None:
@@ -416,8 +426,9 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
         table.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#020d3f")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("BACKGROUND", (0, 0), (-1, 0), navy),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), gold),
+                    ("TEXTCOLOR", (0, 1), (-1, -1), navy),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#b7b7b7")),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 7),
@@ -431,7 +442,13 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
     if len(specs) > 80:
         elements.append(PageBreak())
         elements.append(Paragraph(f"Relatorio limitado aos primeiros 80 periodos de estadia filtrados. Total filtrado: {len(specs)}.", styles["Normal"]))
-    doc.build(elements)
+
+    def draw_background(canvas, document) -> None:
+        if RODO_WALL_PDF_BACKGROUND_PATH.exists():
+            width, height = document.pagesize
+            canvas.drawImage(str(RODO_WALL_PDF_BACKGROUND_PATH), 0, 0, width=width, height=height, preserveAspectRatio=False, mask="auto")
+
+    doc.build(elements, onFirstPage=draw_background, onLaterPages=draw_background)
     return output.getvalue()
 
 
