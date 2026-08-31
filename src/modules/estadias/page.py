@@ -411,18 +411,17 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
             elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
             continue
         display = _sample_positions_30_minutes(positions, 500)
-        data = [["Placa", "Data e hora (intervalo 30 min)", "Municipio", "Estado", "Velocidade"]]
+        data = [["Placa", "Data e hora (intervalo 30 min)", "Municipio", "Velocidade"]]
         for _, point in display.iterrows():
             data.append(
                 [
                     str(point.get("placa_norm") or spec.get("placa") or "")[:12],
                     _format_export_datetime(point.get("data_hora")),
                     str(point.get("cidade") or "")[:42],
-                    str(point.get("uf") or "")[:3],
                     _format_speed(point.get("velocidade") or point.get("velocidade_rastreador")),
                 ]
             )
-        table = Table(data, colWidths=[2.4 * cm, 4.4 * cm, 7.0 * cm, 1.5 * cm, 2.5 * cm], repeatRows=1)
+        table = Table(data, colWidths=[2.8 * cm, 4.8 * cm, 7.7 * cm, 2.5 * cm], repeatRows=1)
         table.setStyle(
             TableStyle(
                 [
