@@ -61,6 +61,7 @@ from src.utils.timezone import brasilia_now_iso
 
 
 RODO_WALL_PDF_BACKGROUND_PATH = Path(__file__).resolve().parents[3] / "assets" / "rodo_wall_pdf_background.png"
+MAX_PDFS_PER_ZIP = 20
 
 
 def _duplicate_mode(role: str, key: str) -> str:
@@ -355,7 +356,11 @@ def _safe_pdf_filename(spec: dict[str, object], index: int) -> str:
     return f"{name or f'relatorio_posicoes_{index + 1}'}.pdf"
 
 
-def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None = None) -> bytes:
+def _tracker_positions_pdf(
+    df: pd.DataFrame,
+    selected_indexes: list[int] | None = None,
+    specs_override: list[dict[str, object]] | None = None,
+) -> bytes:
     from html import escape
 
     from reportlab.lib import colors
@@ -385,8 +390,8 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
         )
     )
     elements: list[object] = [header, Spacer(1, 0.35 * cm)]
-    specs = _estadia_period_specs(df)
-    if selected_indexes is not None:
+    specs = list(specs_override) if specs_override is not None else _estadia_period_specs(df)
+    if selected_indexes is not None and specs_override is None:
         selected_set = {int(index) for index in selected_indexes if 0 <= int(index) < len(specs)}
         specs = [spec for index, spec in enumerate(specs) if index in selected_set]
     safe = lambda value, default="-": escape(str(value if value not in [None, ""] else default))
@@ -459,7 +464,7 @@ def _tracker_positions_pdf_zip(df: pd.DataFrame, selected_indexes: list[int]) ->
             if index < 0 or index >= len(specs):
                 continue
             filename = _safe_pdf_filename(specs[index], index)
-            archive.writestr(filename, _tracker_positions_pdf(df, [index]))
+            archive.writestr(filename, _tracker_positions_pdf(df, specs_override=[specs[index]]))
     return output.getvalue()
 
 
@@ -2012,26 +2017,56 @@ def render_cross_page(usuario: str) -> None:
                 .sub(1)
                 .tolist()
             )
-            multiple_pdfs = len(pdf_selected) > 1
-            download_stamp = re.sub(r"\D+", "", brasilia_now_iso())[:14] or "atual"
-            if multiple_pdfs:
-                download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
-                download_name = f"relatorios_posicoes_rastreador_{download_stamp}.zip"
-                mime_type = "application/zip"
-                button_label = "Baixar PDFs selecionados"
-            else:
-                download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected) if pdf_selected else b""
-                download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
-                mime_type = "application/pdf"
-                button_label = "Baixar PDF selecionado"
-            st.download_button(
-                button_label,
-                download_bytes,
-                download_name,
-                mime_type,
+            selection_signature = ",".join(str(index) for index in pdf_selected)
+            prepared = st.session_state.get("estadias_pdf_export_preparado")
+            if prepared and prepared.get("signature") != selection_signature:
+                prepared = None
+            if len(pdf_selected) > MAX_PDFS_PER_ZIP:
+                st.warning(f"Selecione no maximo {MAX_PDFS_PER_ZIP} estadias por vez para evitar queda da sessao.")
+            col_prepare, col_download, col_clear_pdf = st.columns([1, 1, 1])
+            if col_prepare.button(
+                "Preparar PDF/ZIP",
                 use_container_width=True,
-                disabled=not pdf_selected,
-            )
+                disabled=not pdf_selected or len(pdf_selected) > MAX_PDFS_PER_ZIP,
+                key="estadias_pdf_preparar",
+            ):
+                multiple_pdfs = len(pdf_selected) > 1
+                download_stamp = re.sub(r"\D+", "", brasilia_now_iso())[:14] or "atual"
+                with st.spinner("Preparando arquivo de posicoes..."):
+                    if multiple_pdfs:
+                        download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
+                        download_name = f"relatorios_posicoes_rastreador_{download_stamp}.zip"
+                        mime_type = "application/zip"
+                        button_label = "Baixar PDFs selecionados"
+                    else:
+                        download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected)
+                        download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
+                        mime_type = "application/pdf"
+                        button_label = "Baixar PDF selecionado"
+                prepared = {
+                    "signature": selection_signature,
+                    "bytes": download_bytes,
+                    "name": download_name,
+                    "mime": mime_type,
+                    "label": button_label,
+                    "count": len(pdf_selected),
+                }
+                st.session_state["estadias_pdf_export_preparado"] = prepared
+                st.success(f"Arquivo preparado para {len(pdf_selected)} estadia(s).")
+            if prepared:
+                col_download.download_button(
+                    prepared.get("label") or "Baixar arquivo",
+                    prepared.get("bytes") or b"",
+                    prepared.get("name") or "relatorio_posicoes_rastreador.pdf",
+                    prepared.get("mime") or "application/octet-stream",
+                    use_container_width=True,
+                    key="estadias_pdf_download_preparado",
+                )
+            else:
+                col_download.button("Baixar arquivo", use_container_width=True, disabled=True)
+            if col_clear_pdf.button("Limpar PDF preparado", use_container_width=True, key="estadias_pdf_limpar_preparado"):
+                st.session_state.pop("estadias_pdf_export_preparado", None)
+                st.rerun()
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
 
