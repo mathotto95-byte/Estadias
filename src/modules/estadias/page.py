@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -340,24 +341,38 @@ def _format_speed(value: object) -> str:
     return f"{speed:.1f}".replace(".", ",")
 
 
+def _safe_pdf_filename(spec: dict[str, object], index: int) -> str:
+    parts = [
+        "relatorio_posicoes",
+        str(index + 1),
+        str(spec.get("tipo") or ""),
+        str(spec.get("placa") or ""),
+        f"nf_{spec.get('nf') or ''}",
+    ]
+    name = "_".join(part for part in parts if part).lower()
+    name = re.sub(r"[^a-z0-9_-]+", "_", name)
+    name = re.sub(r"_+", "_", name).strip("_")
+    return f"{name or f'relatorio_posicoes_{index + 1}'}.pdf"
+
+
 def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None = None) -> bytes:
     from html import escape
 
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
     from reportlab.platypus import Image as ReportLabImage
     from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     output = BytesIO()
-    doc = SimpleDocTemplate(output, pagesize=landscape(A4), leftMargin=0.8 * cm, rightMargin=0.8 * cm, topMargin=0.8 * cm, bottomMargin=0.8 * cm)
+    doc = SimpleDocTemplate(output, pagesize=A4, leftMargin=0.8 * cm, rightMargin=0.8 * cm, topMargin=0.8 * cm, bottomMargin=0.8 * cm)
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("PdfTitle", parent=styles["Title"], alignment=0, fontSize=18, leading=22, textColor=colors.HexColor("#020d3f"))
+    title_style = ParagraphStyle("PdfTitle", parent=styles["Title"], alignment=0, fontSize=15, leading=18, textColor=colors.HexColor("#020d3f"))
     header_cells: list[object] = [Paragraph("Relatório de Posições Rastreador", title_style), ""]
     if RODO_WALL_LOGO_PATH.exists():
-        header_cells[1] = ReportLabImage(str(RODO_WALL_LOGO_PATH), width=4.2 * cm, height=1.4 * cm)
-    header = Table([header_cells], colWidths=[21.0 * cm, 5.0 * cm])
+        header_cells[1] = ReportLabImage(str(RODO_WALL_LOGO_PATH), width=3.6 * cm, height=1.2 * cm)
+    header = Table([header_cells], colWidths=[13.8 * cm, 4.0 * cm])
     header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
     elements: list[object] = [header, Spacer(1, 0.35 * cm)]
     specs = _estadia_period_specs(df)
@@ -397,7 +412,7 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
                     _format_speed(point.get("velocidade") or point.get("velocidade_rastreador")),
                 ]
             )
-        table = Table(data, colWidths=[3.0 * cm, 5.0 * cm, 11.0 * cm, 2.0 * cm, 3.0 * cm], repeatRows=1)
+        table = Table(data, colWidths=[2.4 * cm, 4.4 * cm, 7.0 * cm, 1.5 * cm, 2.5 * cm], repeatRows=1)
         table.setStyle(
             TableStyle(
                 [
@@ -417,6 +432,18 @@ def _tracker_positions_pdf(df: pd.DataFrame, selected_indexes: list[int] | None 
         elements.append(PageBreak())
         elements.append(Paragraph(f"Relatorio limitado aos primeiros 80 periodos de estadia filtrados. Total filtrado: {len(specs)}.", styles["Normal"]))
     doc.build(elements)
+    return output.getvalue()
+
+
+def _tracker_positions_pdf_zip(df: pd.DataFrame, selected_indexes: list[int]) -> bytes:
+    specs = _estadia_period_specs(df)
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index in selected_indexes:
+            if index < 0 or index >= len(specs):
+                continue
+            filename = _safe_pdf_filename(specs[index], index)
+            archive.writestr(filename, _tracker_positions_pdf(df, [index]))
     return output.getvalue()
 
 
@@ -1969,12 +1996,22 @@ def render_cross_page(usuario: str) -> None:
                 .sub(1)
                 .tolist()
             )
-            pdf_bytes = _tracker_positions_pdf(pdf_base, pdf_selected) if pdf_selected else b""
+            multiple_pdfs = len(pdf_selected) > 1
+            if multiple_pdfs:
+                download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
+                download_name = "relatorios_posicoes_rastreador.zip"
+                mime_type = "application/zip"
+                button_label = "Baixar PDFs selecionados"
+            else:
+                download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected) if pdf_selected else b""
+                download_name = "relatorio_posicoes_rastreador.pdf"
+                mime_type = "application/pdf"
+                button_label = "Baixar PDF selecionado"
             st.download_button(
-                "Baixar PDF selecionado",
-                pdf_bytes,
-                "relatorio_posicoes_rastreador.pdf",
-                "application/pdf",
+                button_label,
+                download_bytes,
+                download_name,
+                mime_type,
                 use_container_width=True,
                 disabled=not pdf_selected,
             )
