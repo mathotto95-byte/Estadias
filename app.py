@@ -10,6 +10,7 @@ import streamlit as st
 
 from estadias_app.auth import authenticate, using_default_admin
 from estadias_app.github_backup import (
+    BACKUP_TABLES,
     all_database_tables,
     backup_json_bytes,
     backup_to_github,
@@ -24,6 +25,7 @@ from estadias_app.github_backup import (
     prune_history,
     restore_from_github_if_empty,
     restore_json_bytes,
+    table_counts,
     test_github_connection,
 )
 from src.config.settings import ensure_directories
@@ -58,10 +60,22 @@ MENU = [
 ]
 
 
+LARGE_SESSION_EXPORT_KEYS = (
+    "estadias_importacoes_backup_bytes",
+    "estadias_zip_backup_bytes",
+    "estadias_pdf_export_preparado",
+)
+
+
 def initialize_database() -> None:
     ensure_directories()
     with get_connection() as conn:
         create_modular_tables(conn)
+
+
+def _clear_large_session_exports() -> None:
+    for key in LARGE_SESSION_EXPORT_KEYS:
+        st.session_state.pop(key, None)
 
 
 def _apply_theme() -> None:
@@ -294,51 +308,63 @@ def _database_zip() -> bytes:
 def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
     st.caption("O backup salva dois JSONs: resultado do painel e bases normalizadas importadas para recalculo futuro.")
-    tables = all_database_tables()
+    counts = table_counts(BACKUP_TABLES)
     import_counts = imported_database_counts()
-    total = sum(len(df) for df in tables.values())
+    total = sum(counts.values())
     import_total = sum(import_counts.values())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tabelas resultado", len(tables))
+    c1.metric("Tabelas resultado", len(counts))
     c2.metric("Registros resultado", total)
     c3.metric("Tabelas importacao", len(import_counts))
     c4.metric("Registros importacao", import_total)
     stamp = brasilia_now().strftime("%Y%m%d_%H%M%S")
     col1, col2 = st.columns(2)
-    col1.download_button("Baixar resultado JSON", backup_json_bytes(), f"estadias_resultado_{stamp}.json", "application/json", use_container_width=True)
-    col2.download_button(
-        "Baixar resultado Excel",
-        dataframe_to_excel(tables),
-        f"estadias_resultado_{stamp}.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    if col1.button("Preparar resultado JSON", use_container_width=True, disabled=total <= 0):
+        try:
+            st.download_button(
+                "Baixar resultado JSON preparado",
+                backup_json_bytes(),
+                f"estadias_resultado_{stamp}.json",
+                "application/json",
+                use_container_width=True,
+            )
+        except Exception as exc:
+            st.error(f"Nao foi possivel preparar o JSON de resultado: {exc}")
+    if col2.button("Preparar resultado Excel", use_container_width=True, disabled=total <= 0):
+        try:
+            st.download_button(
+                "Baixar resultado Excel preparado",
+                dataframe_to_excel(all_database_tables()),
+                f"estadias_resultado_{stamp}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception as exc:
+            st.error(f"Nao foi possivel preparar o Excel de resultado: {exc}")
 
     prep1, prep2 = st.columns(2)
     if prep1.button("Preparar JSON das importacoes", use_container_width=True, disabled=import_total <= 0):
-        st.session_state["estadias_importacoes_backup_bytes"] = import_backup_json_bytes()
-        st.session_state["estadias_importacoes_backup_stamp"] = stamp
+        try:
+            st.download_button(
+                "Baixar importacoes JSON preparado",
+                import_backup_json_bytes(),
+                f"estadias_importacoes_{stamp}.json",
+                "application/json",
+                use_container_width=True,
+            )
+        except Exception as exc:
+            st.error(f"Nao foi possivel preparar o JSON das importacoes: {exc}")
     if prep2.button("Preparar ZIP completo", use_container_width=True, disabled=(total + import_total) <= 0):
-        st.session_state["estadias_zip_backup_bytes"] = _database_zip()
-        st.session_state["estadias_zip_backup_stamp"] = stamp
-    prepared_imports = st.session_state.get("estadias_importacoes_backup_bytes")
-    if prepared_imports:
-        st.download_button(
-            "Baixar importacoes JSON preparado",
-            prepared_imports,
-            f"estadias_importacoes_{st.session_state.get('estadias_importacoes_backup_stamp') or stamp}.json",
-            "application/json",
-            use_container_width=True,
-        )
-    prepared_zip = st.session_state.get("estadias_zip_backup_bytes")
-    if prepared_zip:
-        st.download_button(
-            "Baixar ZIP completo preparado",
-            prepared_zip,
-            f"backup_completo_estadias_{st.session_state.get('estadias_zip_backup_stamp') or stamp}.zip",
-            "application/zip",
-            use_container_width=True,
-        )
+        try:
+            st.download_button(
+                "Baixar ZIP completo preparado",
+                _database_zip(),
+                f"backup_completo_estadias_{stamp}.zip",
+                "application/zip",
+                use_container_width=True,
+            )
+        except Exception as exc:
+            st.error(f"Nao foi possivel preparar o ZIP completo: {exc}")
 
     st.divider()
     st.subheader("Limpar residuos das importacoes")
@@ -406,6 +432,7 @@ def render_backup_page() -> None:
 def main() -> None:
     st.set_page_config(page_title="Estadias", page_icon="E", layout="wide")
     _apply_theme()
+    _clear_large_session_exports()
     username = _require_login()
     initialize_database()
     _restore_from_github_once()

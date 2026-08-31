@@ -61,7 +61,7 @@ from src.utils.timezone import brasilia_now_iso
 
 
 RODO_WALL_PDF_BACKGROUND_PATH = Path(__file__).resolve().parents[3] / "assets" / "rodo_wall_pdf_background.png"
-MAX_PDFS_PER_ZIP = 20
+MAX_PDFS_PER_ZIP = 10
 
 
 def _duplicate_mode(role: str, key: str) -> str:
@@ -411,11 +411,11 @@ def _tracker_positions_pdf(
         )
         elements.append(Paragraph(details, styles["Normal"]))
         elements.append(Spacer(1, 0.2 * cm))
-        positions = read_rastreador_period(str(spec.get("placa") or ""), str(spec.get("chegada") or ""), str(spec.get("saida") or ""), 5000)
+        positions = read_rastreador_period(str(spec.get("placa") or ""), str(spec.get("chegada") or ""), str(spec.get("saida") or ""), 2500)
         if positions.empty:
             elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
             continue
-        display = _sample_positions_30_minutes(positions, 500)
+        display = _sample_positions_30_minutes(positions, 250)
         data = [["Placa", "Data e hora (intervalo 30 min)", "Municipio", "Velocidade"]]
         for _, point in display.iterrows():
             data.append(
@@ -2017,13 +2017,9 @@ def render_cross_page(usuario: str) -> None:
                 .sub(1)
                 .tolist()
             )
-            selection_signature = ",".join(str(index) for index in pdf_selected)
-            prepared = st.session_state.get("estadias_pdf_export_preparado")
-            if prepared and prepared.get("signature") != selection_signature:
-                prepared = None
             if len(pdf_selected) > MAX_PDFS_PER_ZIP:
                 st.warning(f"Selecione no maximo {MAX_PDFS_PER_ZIP} estadias por vez para evitar queda da sessao.")
-            col_prepare, col_download, col_clear_pdf = st.columns([1, 1, 1])
+            col_prepare, col_download = st.columns([1, 1])
             if col_prepare.button(
                 "Preparar PDF/ZIP",
                 use_container_width=True,
@@ -2033,40 +2029,31 @@ def render_cross_page(usuario: str) -> None:
                 multiple_pdfs = len(pdf_selected) > 1
                 download_stamp = re.sub(r"\D+", "", brasilia_now_iso())[:14] or "atual"
                 with st.spinner("Preparando arquivo de posicoes..."):
-                    if multiple_pdfs:
-                        download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
-                        download_name = f"relatorios_posicoes_rastreador_{download_stamp}.zip"
-                        mime_type = "application/zip"
-                        button_label = "Baixar PDFs selecionados"
+                    try:
+                        if multiple_pdfs:
+                            download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
+                            download_name = f"relatorios_posicoes_rastreador_{download_stamp}.zip"
+                            mime_type = "application/zip"
+                            button_label = "Baixar PDFs selecionados"
+                        else:
+                            download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected)
+                            download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
+                            mime_type = "application/pdf"
+                            button_label = "Baixar PDF selecionado"
+                    except Exception as exc:
+                        st.error(f"Nao foi possivel preparar o arquivo de posicoes: {exc}")
                     else:
-                        download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected)
-                        download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
-                        mime_type = "application/pdf"
-                        button_label = "Baixar PDF selecionado"
-                prepared = {
-                    "signature": selection_signature,
-                    "bytes": download_bytes,
-                    "name": download_name,
-                    "mime": mime_type,
-                    "label": button_label,
-                    "count": len(pdf_selected),
-                }
-                st.session_state["estadias_pdf_export_preparado"] = prepared
-                st.success(f"Arquivo preparado para {len(pdf_selected)} estadia(s).")
-            if prepared:
-                col_download.download_button(
-                    prepared.get("label") or "Baixar arquivo",
-                    prepared.get("bytes") or b"",
-                    prepared.get("name") or "relatorio_posicoes_rastreador.pdf",
-                    prepared.get("mime") or "application/octet-stream",
-                    use_container_width=True,
-                    key="estadias_pdf_download_preparado",
-                )
+                        st.success(f"Arquivo preparado para {len(pdf_selected)} estadia(s).")
+                        col_download.download_button(
+                            button_label,
+                            download_bytes,
+                            download_name,
+                            mime_type,
+                            use_container_width=True,
+                            key="estadias_pdf_download_preparado",
+                        )
             else:
                 col_download.button("Baixar arquivo", use_container_width=True, disabled=True)
-            if col_clear_pdf.button("Limpar PDF preparado", use_container_width=True, key="estadias_pdf_limpar_preparado"):
-                st.session_state.pop("estadias_pdf_export_preparado", None)
-                st.rerun()
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
 
