@@ -2259,6 +2259,7 @@ def atualizar_cruzamento(usuario: str, progress_callback: ProgressCallback | Non
     rows = build_cross_rows(progress_callback, placa_filtro)
     _emit_progress(progress_callback, 95, 100, "Salvando resultado do cruzamento...")
     repository.replace_cross(rows, usuario)
+    repository.replace_estadia_position_snapshots(rows, usuario, replace_all=True)
     repository.registrar_auditoria(usuario, "PROCESSAR_ESTADIAS", valor_novo_json=json.dumps({"viagens": len(rows), "placa_filtro": _normalize_plate_candidate(placa_filtro)}, ensure_ascii=False))
     _emit_progress(progress_callback, 100, 100, "Atualizacao concluida.")
     return pd.DataFrame(rows)
@@ -2341,8 +2342,10 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
     _emit_progress(progress_callback, 95, 100, "Salvando resultado atualizado...")
     if plate_filter:
         repository.replace_cross_subset(rows_to_save, usuario, recalculated_ids)
+        repository.replace_estadia_position_snapshots(rows_to_save, usuario, recalculated_ids)
     else:
         repository.replace_cross(rows, usuario)
+        repository.replace_estadia_position_snapshots(rows, usuario, replace_all=True)
     result = pd.DataFrame(rows)
     summary_base = pd.DataFrame(recalculated_rows) if plate_filter else result
     summary = {
@@ -2357,5 +2360,98 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
     }
     _emit_progress(progress_callback, 98, 100, "Registrando auditoria...")
     repository.registrar_auditoria(usuario, "ATUALIZAR_ESTADIAS_INCREMENTAL", valor_novo_json=json.dumps(summary | {"placa_filtro": plate_filter}, ensure_ascii=False))
+    _emit_progress(progress_callback, 100, 100, "Atualizacao concluida.")
+    return result, summary
+
+
+def atualizar_cruzamento_incremental_placas(
+    usuario: str,
+    placas: list[str] | set[str] | tuple[str, ...],
+    progress_callback: ProgressCallback | None = None,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    normalized_plates = [plate for plate in dict.fromkeys(_normalize_plate_candidate(value) for value in placas) if plate]
+    if not normalized_plates:
+        return atualizar_cruzamento_incremental(usuario, progress_callback, "")
+    if len(normalized_plates) == 1:
+        return atualizar_cruzamento_incremental(usuario, progress_callback, normalized_plates[0])
+
+    _emit_progress(progress_callback, 1, 100, "Lendo resultado anterior...")
+    existing = repository.read_cross(300000)
+    existing_by_lcte: dict[int, dict[str, Any]] = {}
+    if not existing.empty and "lcte_id" in existing.columns:
+        for row in existing.to_dict(orient="records"):
+            try:
+                existing_by_lcte[int(row.get("lcte_id") or 0)] = row
+            except Exception:
+                continue
+
+    recalculated_by_lcte: dict[int, dict[str, Any]] = {}
+    total_plates = len(normalized_plates)
+    for plate_index, plate in enumerate(normalized_plates, start=1):
+        def plate_progress(current: int, total: int, message: str, plate_index: int = plate_index, plate: str = plate) -> None:
+            base = 2 + int(((plate_index - 1) / max(total_plates, 1)) * 86)
+            span = max(1, int(86 / max(total_plates, 1)))
+            mapped = base + int((current / max(total, 1)) * span)
+            _emit_progress(progress_callback, min(mapped, 88), 100, f"Placa {plate}: {message}")
+
+        for row in build_cross_rows(plate_progress, plate):
+            try:
+                lcte_id = int(row.get("lcte_id") or 0)
+            except Exception:
+                lcte_id = 0
+            if lcte_id:
+                recalculated_by_lcte[lcte_id] = row
+
+    recalculated_rows = list(recalculated_by_lcte.values())
+    recalculated_ids = set(recalculated_by_lcte)
+    _emit_progress(progress_callback, 89, 100, "Comparando registros novos e alterados...")
+    rows: list[dict[str, Any]] = []
+    rows_to_save: list[dict[str, Any]] = []
+    new_count = 0
+    changed_count = 0
+    preserved_count = 0
+
+    if not existing.empty and "lcte_id" in existing.columns:
+        for old in existing.to_dict(orient="records"):
+            try:
+                old_lcte_id = int(old.get("lcte_id") or 0)
+            except Exception:
+                old_lcte_id = 0
+            if old_lcte_id not in recalculated_ids:
+                rows.append(old)
+
+    for row in recalculated_rows:
+        lcte_id = int(row.get("lcte_id") or 0)
+        old = existing_by_lcte.get(lcte_id)
+        if old and int(old.get("concluido") or 0) == 1 and str(old.get("painel_atual") or "").upper() == "CONCLUIDOS":
+            rows.append(old)
+            rows_to_save.append(old)
+            preserved_count += 1
+            continue
+        if not old:
+            new_count += 1
+        elif _row_signature(row) != _row_signature(old):
+            changed_count += 1
+        rows.append(row)
+        rows_to_save.append(row)
+
+    _emit_progress(progress_callback, 95, 100, "Salvando resultado atualizado...")
+    repository.replace_cross_subset(rows_to_save, usuario, recalculated_ids)
+    repository.replace_estadia_position_snapshots(rows_to_save, usuario, recalculated_ids)
+    result = pd.DataFrame(rows)
+    summary_base = pd.DataFrame(recalculated_rows)
+    summary = {
+        "registros_novos": int(new_count),
+        "registros_atualizados": int(changed_count),
+        "viagens_control": int(summary_base.get("encontrou_control", pd.Series(dtype=int)).fillna(0).astype(int).eq(1).sum()) if not summary_base.empty else 0,
+        "viagens_rastreador": int(summary_base.get("encontrou_rastreador", pd.Series(dtype=int)).fillna(0).astype(int).eq(1).sum()) if not summary_base.empty else 0,
+        "estadias_identificadas": int(summary_base.get("painel_atual", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ESTADIAS").sum()) if not summary_base.empty else 0,
+        "pendencias": int(summary_base.get("painel_atual", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("VERIFICACAO").sum()) if not summary_base.empty else 0,
+        "concluidos_preservados": int(preserved_count),
+        "erros": int(summary_base.get("status_cruzamento", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ERRO").sum()) if not summary_base.empty else 0,
+        "placas_processadas": len(normalized_plates),
+    }
+    _emit_progress(progress_callback, 98, 100, "Registrando auditoria...")
+    repository.registrar_auditoria(usuario, "ATUALIZAR_ESTADIAS_PLACAS", valor_novo_json=json.dumps(summary | {"placas": normalized_plates}, ensure_ascii=False))
     _emit_progress(progress_callback, 100, 100, "Atualizacao concluida.")
     return result, summary

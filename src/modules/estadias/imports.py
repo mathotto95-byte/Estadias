@@ -806,6 +806,7 @@ def import_rastreador_files(
     total_lines = 0
     success = errors = duplicates = 0
     total = len(files)
+    imported_plates: set[str] = set()
     for index_file, file in enumerate(files, start=1):
         file_name = getattr(file, "name", f"rastreador_{index_file}.xlsx")
         if progress_callback:
@@ -857,6 +858,9 @@ def import_rastreador_files(
                 original_rows.append(original_base)
                 normalized_row = normalize_rastreador_row(raw, columns, normalized_base, placa_arquivo)
                 normalized_rows.append(normalized_row)
+                plate_norm = str(normalized_row.get("placa_norm") or "").strip()
+                if plate_norm:
+                    imported_plates.add(plate_norm)
                 _update_import_stats(stats, normalized_row, "data_hora")
                 if len(original_rows) >= RASTREADOR_INSERT_CHUNK_SIZE:
                     flush_chunks()
@@ -902,5 +906,6 @@ def import_rastreador_files(
         "arquivos_erro": errors,
         "arquivos_duplicados": duplicates,
         "total_linhas": total_lines,
+        "placas_importadas": sorted(imported_plates),
         "resultado": pd.DataFrame(rows),
     }

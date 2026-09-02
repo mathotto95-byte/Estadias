@@ -85,6 +85,7 @@ def modular_tables() -> tuple[str, ...]:
         "mod_estadias_lcte_normalizada",
         "mod_estadias_rastreador_original",
         "mod_estadias_rastreador_normalizada",
+        "mod_estadias_posicoes_resultado",
         "mod_estadias_logs_importacao",
         "mod_estadias_cruzamento_inicial",
         "mod_estadias_configuracoes",
@@ -960,6 +961,33 @@ def create_modular_tables(conn) -> None:
         adapt_sql(
             conn,
             """
+            create table if not exists mod_estadias_posicoes_resultado (
+                id integer primary key autoincrement,
+                lcte_id integer,
+                tipo_estadia text,
+                placa_norm text,
+                cte text,
+                nf text,
+                local text,
+                origem text,
+                destino text,
+                data_inicio text,
+                data_fim text,
+                data_hora text,
+                cidade text,
+                uf_posicao text,
+                velocidade real,
+                fonte text,
+                criado_em text,
+                criado_por text
+            )
+            """,
+        )
+    )
+    conn.execute(
+        adapt_sql(
+            conn,
+            """
             create table if not exists mod_estadias_cruzamento_inicial (
                 id integer primary key autoincrement,
                 lcte_id integer,
@@ -1494,6 +1522,29 @@ def create_modular_tables(conn) -> None:
     )
     ensure_columns(
         conn,
+        "mod_estadias_posicoes_resultado",
+        {
+            "lcte_id": "integer",
+            "tipo_estadia": "text",
+            "placa_norm": "text",
+            "cte": "text",
+            "nf": "text",
+            "local": "text",
+            "origem": "text",
+            "destino": "text",
+            "data_inicio": "text",
+            "data_fim": "text",
+            "data_hora": "text",
+            "cidade": "text",
+            "uf_posicao": "text",
+            "velocidade": "real",
+            "fonte": "text",
+            "criado_em": "text",
+            "criado_por": "text",
+        },
+    )
+    ensure_columns(
+        conn,
         "mod_estadias_cruzamento_inicial",
         {
             "lcte_id": "integer",
@@ -1696,6 +1747,8 @@ def create_modular_tables(conn) -> None:
         _create_index_if_column(conn, table, f"idx_{table}_lote_importacao", "lote_importacao")
         _create_index_if_column(conn, table, f"idx_{table}_lote_validacao", "lote_validacao")
     _create_index_if_columns(conn, "mod_estadias_rastreador_normalizada", "idx_estadias_rastreador_placa_data", ["placa_norm", "data_hora"])
+    _create_index_if_columns(conn, "mod_estadias_posicoes_resultado", "idx_estadias_posicoes_lcte_tipo", ["lcte_id", "tipo_estadia"])
+    _create_index_if_columns(conn, "mod_estadias_posicoes_resultado", "idx_estadias_posicoes_placa_data", ["placa_norm", "data_hora"])
     _create_index_if_columns(conn, "mod_estadias_lcte_normalizada", "idx_estadias_lcte_placa_data", ["placa_norm", "data_operacao"])
     _create_index_if_columns(conn, "mod_estadias_control_normalizada", "idx_estadias_control_placa_data", ["placa_norm", "data_hora_inicio"])
 

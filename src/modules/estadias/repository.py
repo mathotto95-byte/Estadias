@@ -34,6 +34,7 @@ LCTE_ORIGINAL_TABLE = "mod_estadias_lcte_original"
 LCTE_NORMALIZED_TABLE = "mod_estadias_lcte_normalizada"
 RASTREADOR_ORIGINAL_TABLE = "mod_estadias_rastreador_original"
 RASTREADOR_NORMALIZED_TABLE = "mod_estadias_rastreador_normalizada"
+ESTADIA_POSITIONS_TABLE = "mod_estadias_posicoes_resultado"
 LOG_TABLE = "mod_estadias_logs_importacao"
 CROSS_TABLE = "mod_estadias_cruzamento_inicial"
 CONFIG_TABLE = "mod_estadias_configuracoes"
@@ -160,6 +161,64 @@ def clear_lcte_base() -> dict[str, int]:
             conn.execute("delete from mod_estadias_logs_importacao where tipo_importacao = 'LCTE_IPIRANGA'")
     _invalidate_read_cache()
     return deleted
+
+
+def clear_estadias_rastreador_database() -> dict[str, Any]:
+    tables = [RASTREADOR_ORIGINAL_TABLE, RASTREADOR_NORMALIZED_TABLE]
+    deleted: dict[str, int] = {}
+    db_type = "sqlite"
+    with get_connection() as conn:
+        db_type = getattr(conn, "db_type", "sqlite")
+
+        def exists(table: str) -> bool:
+            if db_type == "postgres":
+                row = conn.execute(
+                    """
+                    select 1
+                    from information_schema.tables
+                    where table_schema = 'public' and table_name = ?
+                    """,
+                    (table,),
+                ).fetchone()
+            else:
+                row = conn.execute("select 1 from sqlite_master where type = 'table' and name = ?", (table,)).fetchone()
+            return bool(row)
+
+        for table in tables:
+            if not exists(table):
+                deleted[table] = 0
+                continue
+            before = conn.execute(f"select count(*) from {table}").fetchone()
+            deleted[table] = int(before[0] or 0) if before else 0
+            if db_type == "postgres":
+                conn.execute(f"truncate table {table} restart identity")
+            else:
+                conn.execute(f"delete from {table}")
+                conn.execute("delete from sqlite_sequence where name = ?", (table,))
+        if exists(LOG_TABLE):
+            before = conn.execute(
+                f"""
+                select count(*)
+                from {LOG_TABLE}
+                where tipo_importacao = 'RASTREADOR_PLACA'
+                """
+            ).fetchone()
+            deleted[f"{LOG_TABLE}:RASTREADOR_PLACA"] = int(before[0] or 0) if before else 0
+            conn.execute(f"delete from {LOG_TABLE} where tipo_importacao = 'RASTREADOR_PLACA'")
+
+    compact_message = ""
+    compacted = False
+    if db_type != "postgres" and DB_PATH.exists():
+        try:
+            with sqlite3.connect(DB_PATH, timeout=60, isolation_level=None) as raw_conn:
+                raw_conn.execute("vacuum")
+            compacted = True
+            compact_message = "SQLite compactado."
+        except Exception as exc:
+            compact_message = f"Rastreador limpo, mas compactacao SQLite nao executada: {exc}"
+
+    _invalidate_read_cache()
+    return {"deleted": deleted, "total_deleted": sum(deleted.values()), "compacted": compacted, "message": compact_message}
 
 
 def clear_estadias_imported_database() -> dict[str, int]:
@@ -424,6 +483,143 @@ def read_rastreador_period_for_plates(placas_norm: list[str], start: str, end: s
         """,
         tuple(plates + [str(start), str(end), int(limit)]),
     )
+
+
+def _sql_datetime(value: Any) -> str:
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt):
+            return ""
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _sample_positions_for_result(positions: pd.DataFrame, limit: int = 250) -> pd.DataFrame:
+    if positions.empty:
+        return positions
+    sampled = positions.copy()
+    sampled["_data_dt"] = pd.to_datetime(sampled.get("data_hora"), errors="coerce")
+    sampled = sampled[sampled["_data_dt"].notna()].sort_values("_data_dt")
+    if sampled.empty:
+        return positions.head(limit).copy()
+    sampled["_bucket_30min"] = sampled["_data_dt"].dt.floor("30min")
+    sampled = sampled.drop_duplicates("_bucket_30min", keep="first")
+    last_row = positions.copy()
+    last_row["_data_dt"] = pd.to_datetime(last_row.get("data_hora"), errors="coerce")
+    last_row = last_row[last_row["_data_dt"].notna()].sort_values("_data_dt").tail(1)
+    if not last_row.empty and last_row.index[0] not in sampled.index:
+        sampled = pd.concat([sampled, last_row], ignore_index=False)
+    return sampled.head(limit).drop(columns=["_data_dt", "_bucket_30min"], errors="ignore")
+
+
+def _estadia_specs_from_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    for row in rows:
+        common = {
+            "lcte_id": int(row.get("lcte_id") or row.get("id") or 0),
+            "cte": str(row.get("cte") or ""),
+            "nf": str(row.get("nf") or ""),
+            "placa_norm": str(row.get("placa_norm") or "").strip(),
+            "origem": str(row.get("origem") or ""),
+            "destino": str(row.get("destino") or ""),
+        }
+        for tipo, local_col, arrival_col, departure_col, stay_col in [
+            ("ORIGEM", "origem", "chegada_origem", "saida_origem", "estadia_carga_min"),
+            ("DESTINO", "destino", "chegada_destino", "saida_destino", "estadia_descarga_min"),
+        ]:
+            stay = pd.to_numeric(pd.Series([row.get(stay_col)]), errors="coerce").fillna(0).iloc[0]
+            start = _sql_datetime(row.get(arrival_col))
+            end = _sql_datetime(row.get(departure_col))
+            if float(stay or 0) <= 0 or not common["lcte_id"] or not common["placa_norm"] or not start or not end:
+                continue
+            specs.append({**common, "tipo_estadia": tipo, "local": str(row.get(local_col) or ""), "data_inicio": start, "data_fim": end})
+    return specs
+
+
+def replace_estadia_position_snapshots(
+    rows: list[dict[str, Any]],
+    usuario: str,
+    lcte_ids: list[int] | set[int] | None = None,
+    replace_all: bool = False,
+) -> dict[str, int]:
+    if not table_exists(ESTADIA_POSITIONS_TABLE):
+        return {"periodos": 0, "posicoes": 0}
+    ids = [int(value) for value in dict.fromkeys(lcte_ids or []) if int(value or 0)]
+    with get_connection() as conn:
+        if replace_all:
+            conn.execute(f"delete from {ESTADIA_POSITIONS_TABLE}")
+        elif ids:
+            placeholders = ", ".join("?" for _ in ids)
+            conn.execute(f"delete from {ESTADIA_POSITIONS_TABLE} where lcte_id in ({placeholders})", tuple(ids))
+    specs = _estadia_specs_from_rows(rows)
+    payload: list[dict[str, Any]] = []
+    now = brasilia_now_iso()
+    for spec in specs:
+        positions = read_rastreador_period(str(spec["placa_norm"]), str(spec["data_inicio"]), str(spec["data_fim"]), 2500)
+        if positions.empty:
+            continue
+        for _, point in _sample_positions_for_result(positions, 250).iterrows():
+            payload.append(
+                {
+                    "lcte_id": spec["lcte_id"],
+                    "tipo_estadia": spec["tipo_estadia"],
+                    "placa_norm": spec["placa_norm"],
+                    "cte": spec["cte"],
+                    "nf": spec["nf"],
+                    "local": spec["local"],
+                    "origem": spec["origem"],
+                    "destino": spec["destino"],
+                    "data_inicio": spec["data_inicio"],
+                    "data_fim": spec["data_fim"],
+                    "data_hora": _sql_datetime(point.get("data_hora")),
+                    "cidade": str(point.get("cidade") or ""),
+                    "uf_posicao": str(point.get("uf") or ""),
+                    "velocidade": pd.to_numeric(pd.Series([point.get("velocidade") or point.get("velocidade_rastreador")]), errors="coerce").fillna(0).iloc[0],
+                    "fonte": "RASTREADOR_RESUMIDO_30_MIN",
+                    "criado_em": now,
+                    "criado_por": usuario,
+                }
+            )
+    inserted = insert_rows(ESTADIA_POSITIONS_TABLE, payload, 1000)
+    _invalidate_read_cache()
+    return {"periodos": len(specs), "posicoes": inserted}
+
+
+def read_estadia_positions_period(
+    lcte_id: int,
+    tipo_estadia: str,
+    placa_norm: str = "",
+    start: str = "",
+    end: str = "",
+    limit: int = 1000,
+) -> pd.DataFrame:
+    if not table_exists(ESTADIA_POSITIONS_TABLE):
+        return pd.DataFrame()
+    tipo = str(tipo_estadia or "").strip().upper()
+    if int(lcte_id or 0) and tipo:
+        return read_sql(
+            f"""
+            select *
+            from {ESTADIA_POSITIONS_TABLE}
+            where lcte_id = ? and upper(coalesce(tipo_estadia, '')) = ?
+            order by data_hora asc
+            limit ?
+            """,
+            (int(lcte_id or 0), tipo, int(limit)),
+        )
+    if str(placa_norm or "").strip() and str(start or "").strip() and str(end or "").strip():
+        return read_sql(
+            f"""
+            select *
+            from {ESTADIA_POSITIONS_TABLE}
+            where placa_norm = ? and data_hora >= ? and data_hora <= ?
+            order by data_hora asc
+            limit ?
+            """,
+            (str(placa_norm).strip(), str(start), str(end), int(limit)),
+        )
+    return pd.DataFrame()
 
 
 def count_rastreador_plate(placa_norm: str) -> int:

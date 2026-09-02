@@ -296,7 +296,7 @@ def _database_zip() -> bytes:
                     "gerado_em": brasilia_now_iso(),
                     "resultado": {name: int(len(df)) for name, df in tables.items()},
                     "importacoes": {name: int(len(df)) for name, df in import_tables.items()},
-                    "observacao": "Contem resultado do painel e bases normalizadas importadas para permitir recalculo posterior.",
+                    "observacao": "Contem resultados, posicoes resumidas para PDF e bases leves importadas. Rastreador bruto e temporario.",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -307,7 +307,7 @@ def _database_zip() -> bytes:
 
 def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
-    st.caption("O backup salva dois JSONs: resultado do painel e bases normalizadas importadas para recalculo futuro.")
+    st.caption("O backup salva resultados, posicoes resumidas das estadias para PDF e bases leves. O rastreador bruto e temporario.")
     counts = table_counts(BACKUP_TABLES)
     import_counts = imported_database_counts()
     total = sum(counts.values())

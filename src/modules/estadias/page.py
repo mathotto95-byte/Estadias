@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
 from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_control, import_lcte_ipiranga, import_rastreador_files
 from src.modules.estadias.repository import (
@@ -16,6 +17,7 @@ from src.modules.estadias.repository import (
     LCTE_NORMALIZED_TABLE,
     RASTREADOR_NORMALIZED_TABLE,
     clear_estadias_imported_database,
+    clear_estadias_rastreador_database,
     arquivos_rastreador_importados,
     clear_lcte_base,
     latest_logs,
@@ -29,6 +31,7 @@ from src.modules.estadias.repository import (
     read_parametros,
     read_preferencia_colunas,
     read_rastreador,
+    read_estadia_positions_period,
     read_rastreador_period,
     reabrir_conclusao,
     sample,
@@ -40,7 +43,7 @@ from src.modules.estadias.repository import (
     select_distinct,
     table_count,
 )
-from src.modules.estadias.service import atualizar_cruzamento, atualizar_cruzamento_incremental, dashboard_metrics, top_indicators, validation_metrics
+from src.modules.estadias.service import atualizar_cruzamento, atualizar_cruzamento_incremental, atualizar_cruzamento_incremental_placas, dashboard_metrics, top_indicators, validation_metrics
 from src.modules.estadias.teste_lcte_rastreador import (
     CARD_DEFINITIONS,
     DEFAULT_TEST_PLATE,
@@ -411,7 +414,16 @@ def _tracker_positions_pdf(
         )
         elements.append(Paragraph(details, styles["Normal"]))
         elements.append(Spacer(1, 0.2 * cm))
-        positions = read_rastreador_period(str(spec.get("placa") or ""), str(spec.get("chegada") or ""), str(spec.get("saida") or ""), 2500)
+        positions = read_estadia_positions_period(
+            int(spec.get("lcte_id") or 0),
+            str(spec.get("tipo") or ""),
+            str(spec.get("placa") or ""),
+            str(spec.get("chegada") or ""),
+            str(spec.get("saida") or ""),
+            1000,
+        )
+        if positions.empty:
+            positions = read_rastreador_period(str(spec.get("placa") or ""), str(spec.get("chegada") or ""), str(spec.get("saida") or ""), 2500)
         if positions.empty:
             elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
             continue
@@ -714,19 +726,46 @@ def render_imports_page(usuario: str, role: str) -> None:
                 st.warning("Para evitar queda por memoria/tempo, o sistema vai processar em lotes e liberar os arquivos da tela ao terminar.")
             render_dataframe(preview, height=260, max_rows=120)
         tracker_mode = _duplicate_mode(role, "estadias_rastreador_duplicate_mode")
+        process_and_clean = st.checkbox(
+            "Calcular estadias apos importar e limpar rastreador bruto",
+            value=True,
+            help="Mantem no banco apenas o resultado do cruzamento e as posicoes resumidas das estadias para PDF. As posicoes importadas do rastreador sao removidas ao final.",
+        )
         if st.button("Importar relatorios do rastreador", type="primary", use_container_width=True, disabled=not tracker_files):
             progress = st.progress(0)
             status_text = st.empty()
 
             def update_progress(current: int, total: int, file_name: str) -> None:
-                progress.progress(current / max(total, 1))
+                pct = int(round((current / max(total, 1)) * (40 if process_and_clean else 100)))
+                progress.progress(max(0, min(100, pct)))
                 status_text.info(f"Importando {current}/{total}: {file_name}")
 
             result = import_rastreador_files(list(tracker_files or []), usuario, tracker_mode, update_progress)
-            progress.empty()
-            status_text.empty()
-            if int(result.get("total_linhas") or 0) >= 20000 or len(tracker_files or []) > 5:
-                st.session_state["skip_next_auto_backup"] = True
+            if process_and_clean and int(result.get("arquivos_sucesso") or 0) > 0:
+                imported_plates = list(result.get("placas_importadas") or [])
+
+                def update_calc_progress(current: int, total: int, message: str) -> None:
+                    pct = 40 + int(round((current / max(total, 1)) * 45))
+                    progress.progress(max(40, min(85, pct)))
+                    status_text.info(f"Calculando estadias: {message}")
+
+                cross_updated, resumo = atualizar_cruzamento_incremental_placas(usuario, imported_plates, update_calc_progress)
+                result["processamento"] = resumo
+                result["registros_resultado"] = int(len(cross_updated))
+                progress.progress(88)
+                status_text.info("Enviando backup de resultados para o GitHub...")
+                backup_result = backup_to_github("resultado_pos_calculo")
+                result["backup_github"] = backup_result
+                progress.progress(95)
+                status_text.info("Limpando posicoes brutas do rastreador para liberar banco...")
+                cleanup_result = clear_estadias_rastreador_database()
+                result["limpeza_rastreador"] = cleanup_result
+                progress.progress(100)
+                status_text.success("Importacao, calculo, backup e limpeza concluidos.")
+            else:
+                progress.progress(100)
+                status_text.success("Importacao concluida.")
+            st.session_state["skip_next_auto_backup"] = True
             st.session_state["estadias_last_tracker_import_result"] = result
             st.session_state["estadias_rastreador_upload_version"] = int(st.session_state.get("estadias_rastreador_upload_version", 0)) + 1
             st.rerun()
@@ -737,6 +776,17 @@ def render_imports_page(usuario: str, role: str) -> None:
                 f"{last_tracker_result.get('arquivos_erro')} erro(s), {last_tracker_result.get('arquivos_duplicados')} duplicado(s), "
                 f"{last_tracker_result.get('total_linhas')} linha(s)."
             )
+            if last_tracker_result.get("processamento"):
+                st.info(f"Processamento salvo: {last_tracker_result.get('processamento')}")
+            if last_tracker_result.get("backup_github"):
+                backup = last_tracker_result.get("backup_github") or {}
+                if backup.get("status") == "SUCESSO":
+                    st.success(f"Backup GitHub enviado: {backup.get('records', 0)} registro(s).")
+                else:
+                    st.warning(f"Backup GitHub nao concluido: {backup.get('message') or backup.get('status')}")
+            if last_tracker_result.get("limpeza_rastreador"):
+                cleanup = last_tracker_result.get("limpeza_rastreador") or {}
+                st.success(f"Rastreador bruto limpo: {cleanup.get('total_deleted', 0)} registro(s) removidos.")
             render_dataframe(last_tracker_result.get("resultado"), height=360, max_rows=200)
 
 
