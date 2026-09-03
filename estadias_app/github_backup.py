@@ -456,18 +456,29 @@ def restore_payload(payload: dict[str, Any], mode: str = "merge") -> dict[str, A
         raise ValueError("Arquivo JSON nao e um backup Estadias valido.")
     tables = payload.get("tables") or {}
     restored = ignored = errors = 0
+    per_table: dict[str, dict[str, int]] = {}
     replace = mode == "replace"
     with get_connection() as conn:
         for table in target_tables:
             rows = tables.get(table) or []
+            table_restored = table_ignored = table_errors = 0
             if replace and _table_exists(table):
-                conn.execute(f"delete from {table}")
+                if getattr(conn, "db_type", "sqlite") == "postgres":
+                    conn.execute(f"truncate table {table} restart identity")
+                else:
+                    conn.execute(f"delete from {table}")
             if not rows:
+                per_table[table] = {"arquivo": 0, "restaurados": 0, "ignorados": 0, "erros": 0}
+                continue
+            if not _table_exists(table):
+                ignored += len(rows)
+                per_table[table] = {"arquivo": len(rows), "restaurados": 0, "ignorados": len(rows), "erros": 0}
                 continue
             columns = _table_columns(table)
             insert_columns = [column for column in columns if column in rows[0]]
             if not insert_columns:
                 ignored += len(rows)
+                per_table[table] = {"arquivo": len(rows), "restaurados": 0, "ignorados": len(rows), "erros": 0}
                 continue
             placeholders = ", ".join("?" for _ in insert_columns)
             sql = f"insert into {table} ({', '.join(insert_columns)}) values ({placeholders})"
@@ -475,10 +486,27 @@ def restore_payload(payload: dict[str, Any], mode: str = "merge") -> dict[str, A
                 try:
                     conn.execute(sql, tuple(row.get(column) for column in insert_columns))
                     restored += 1
+                    table_restored += 1
                 except Exception:
                     errors += 1
                     ignored += 1
-    return {"status": "SUCESSO" if errors == 0 else "PARCIAL", "schema": schema, "restored": restored, "ignored": ignored, "errors": errors}
+                    table_errors += 1
+                    table_ignored += 1
+            per_table[table] = {"arquivo": len(rows), "restaurados": table_restored, "ignorados": table_ignored, "erros": table_errors}
+    try:
+        import streamlit as st
+
+        st.cache_data.clear()
+    except Exception:
+        pass
+    return {
+        "status": "SUCESSO" if errors == 0 else "PARCIAL",
+        "schema": schema,
+        "restored": restored,
+        "ignored": ignored,
+        "errors": errors,
+        "per_table": per_table,
+    }
 
 
 def restore_json_bytes(content: bytes, mode: str = "merge") -> dict[str, Any]:

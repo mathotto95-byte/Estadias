@@ -410,8 +410,37 @@ def render_backup_page() -> None:
 
     st.divider()
     st.subheader("Importar backup JSON")
+    last_restore = st.session_state.get("estadias_database_restore_result")
+    if isinstance(last_restore, dict):
+        schema_label = "importacoes" if last_restore.get("schema") == "estadias_importacoes_backup_v1" else "resultados"
+        st.success(
+            f"Ultimo backup de {schema_label} importado. "
+            f"Restaurados: {last_restore.get('restored', 0)} | "
+            f"Ignorados: {last_restore.get('ignored', 0)} | "
+            f"Erros: {last_restore.get('errors', 0)}"
+        )
+        per_table = last_restore.get("per_table") or {}
+        if per_table:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "tabela": table,
+                            "linhas_no_json": values.get("arquivo", 0),
+                            "restaurados": values.get("restaurados", 0),
+                            "ignorados": values.get("ignorados", 0),
+                            "erros": values.get("erros", 0),
+                        }
+                        for table, values in per_table.items()
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        if last_restore.get("schema") == "estadias_importacoes_backup_v1":
+            st.warning("Esse JSON contem bases de importacao, nao o painel final. Para aparecer no Cruzamento, importe tambem o JSON de resultados ou recalcule apos importar LCTE e rastreador.")
     uploaded = st.file_uploader("Arquivo JSON de resultado ou importacoes", type=["json"], key="database_backup_upload")
-    mode_label = st.radio("Modo de importacao", ["Mesclar com banco atual", "Substituir banco atual"], horizontal=True)
+    mode_label = st.radio("Modo de importacao", ["Substituir banco atual", "Mesclar com banco atual"], horizontal=True)
     mode = "replace" if mode_label.startswith("Substituir") else "merge"
     confirm = ""
     if mode == "replace":
@@ -421,6 +450,7 @@ def render_backup_page() -> None:
     if st.button("Importar banco", type="primary", use_container_width=True, disabled=disabled):
         try:
             result = restore_json_bytes(uploaded.getvalue(), mode)
+            st.session_state["estadias_database_restore_result"] = result
             schema_label = "importacoes" if result.get("schema") == "estadias_importacoes_backup_v1" else "resultados"
             st.success(f"Backup de {schema_label} importado. Restaurados: {result.get('restored', 0)} | Ignorados: {result.get('ignored', 0)}")
             st.caption("Depois de importar resultado e importacoes, use Recalcular regras no Cruzamento para aplicar a logica atual.")
