@@ -11,7 +11,7 @@ import streamlit as st
 
 from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
-from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_control, import_lcte_ipiranga, import_rastreador_files
+from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_lcte_ipiranga, import_rastreador_files
 from src.modules.estadias.repository import (
     CONTROL_NORMALIZED_TABLE,
     CROSS_TABLE,
@@ -25,7 +25,6 @@ from src.modules.estadias.repository import (
     placas_disponiveis,
     read_auditoria,
     read_config,
-    read_control,
     read_cross,
     read_lcte,
     read_lcte_observations,
@@ -47,21 +46,6 @@ from src.modules.estadias.repository import (
     table_count,
 )
 from src.modules.estadias.service import atualizar_cruzamento, atualizar_cruzamento_incremental, atualizar_cruzamento_incremental_placas, dashboard_metrics, top_indicators, validation_metrics
-from src.modules.estadias.teste_lcte_rastreador import (
-    CARD_DEFINITIONS,
-    DEFAULT_TEST_PLATE,
-    DEFAULT_VISIBLE_COLUMNS,
-    active_card_labels,
-    aplicar_filtros_painel_estadias,
-    available_months,
-    available_years,
-    build_teste_lcte_rastreador,
-    card_counts,
-    ensure_panel_filter_columns,
-    export_sheets as export_teste_lcte_rastreador_sheets,
-    latest_month_with_data,
-    month_label,
-)
 from src.reports.exporter import dataframe_to_excel
 from src.normalizers.fields import normalize_column_name
 from src.modules.estadias.normalizers import monitoramento_da_observacao
@@ -628,8 +612,6 @@ def render_dashboard_page() -> None:
 
     st.subheader("Amostra LCTE Ipiranga")
     render_dataframe(sample(LCTE_NORMALIZED_TABLE, 50), height=260, max_rows=50)
-    st.subheader("Amostra CONTROL")
-    render_dataframe(sample(CONTROL_NORMALIZED_TABLE, 50), height=260, max_rows=50)
     st.subheader("Amostra Rastreador")
     render_dataframe(sample(RASTREADOR_NORMALIZED_TABLE, 50), height=260, max_rows=50)
 
@@ -673,24 +655,6 @@ def render_imports_page(usuario: str, role: str) -> None:
                 st.warning(result.get("mensagem"))
             else:
                 st.error(result.get("mensagem") or "Erro ao importar LCTE Ipiranga.")
-
-    with st.expander("Importar CONTROL - Estadias", expanded=True):
-        control_file = st.file_uploader("Arquivo CONTROL", type=["xlsx", "xls", "csv"], key="estadias_control_upload")
-        mode = _duplicate_mode(role, "estadias_control_duplicate_mode")
-        if st.button("Importar CONTROL", type="primary", use_container_width=True, disabled=control_file is None):
-            with st.spinner("Importando CONTROL..."):
-                result = import_control(control_file, usuario, mode)
-            if result.get("status") == "SUCESSO":
-                st.success(f"CONTROL importado. Lote: {result.get('lote')} | Linhas: {result.get('linhas')}")
-                metric_grid({"Arquivo": result.get("arquivo", "-"), **_import_metric_payload(result)}, columns=4)
-                st.json(result.get("colunas_encontradas") or {})
-                amostra = result.get("amostra")
-                if isinstance(amostra, pd.DataFrame):
-                    render_dataframe(amostra, height=260, max_rows=20)
-            elif result.get("status") == "DUPLICADO":
-                st.warning(result.get("mensagem"))
-            else:
-                st.error(result.get("mensagem") or "Erro ao importar CONTROL.")
 
     with st.expander("Importar Relatorios Rastreador por Placa", expanded=True):
         st.session_state.setdefault("estadias_rastreador_upload_version", 0)
@@ -782,31 +746,6 @@ def render_imports_page(usuario: str, role: str) -> None:
 def _multiselect_filter(table: str, column: str, label: str) -> list[str]:
     options = select_distinct(table, column, 500)
     return st.multiselect(label, options, key=f"estadias_filter_{table}_{column}")
-
-
-def render_control_page() -> None:
-    st.title("Base CONTROL")
-    col_a, col_b, col_c, col_d = st.columns(4)
-    filters = {
-        "lote_importacao": col_a.selectbox("Lote", ["", *select_distinct(CONTROL_NORMALIZED_TABLE, "lote_importacao", 200)]),
-        "arquivo_origem": col_b.selectbox("Arquivo", ["", *select_distinct(CONTROL_NORMALIZED_TABLE, "arquivo_origem", 500)]),
-        "placa_norm": col_c.text_input("Placa"),
-        "data_inicio": col_d.text_input("Data"),
-        "motorista": _multiselect_filter(CONTROL_NORMALIZED_TABLE, "motorista", "Motorista"),
-        "cliente": _multiselect_filter(CONTROL_NORMALIZED_TABLE, "cliente", "Cliente"),
-        "status": _multiselect_filter(CONTROL_NORMALIZED_TABLE, "status", "Status"),
-        "tipo_evento": _multiselect_filter(CONTROL_NORMALIZED_TABLE, "tipo_evento", "Tipo evento"),
-    }
-    df = read_control(filters, 5000)
-    st.download_button(
-        "Exportar Excel",
-        dataframe_to_excel({"control": df}),
-        "estadias_control.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        disabled=df.empty,
-    )
-    render_dataframe(df, height=560, max_rows=1000)
 
 
 def render_rastreador_page() -> None:
@@ -1934,37 +1873,43 @@ def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
         st.json(row.get("log_processamento_json") or "[]")
 
 
-def _monitoring_from_lcte_json(raw_json: object) -> str:
+def _performance_fields_from_lcte_json(raw_json: object) -> tuple[str, str]:
     try:
         fields = json.loads(str(raw_json or "{}"))
     except (ValueError, TypeError):
-        return ""
+        return "", ""
     if not isinstance(fields, dict):
-        return ""
+        return "", ""
+    monitoring = municipality = ""
     for name, value in fields.items():
-        if normalize_column_name(name) in {"observacao", "obs", "comentario"}:
-            return monitoramento_da_observacao(value)
-    return ""
+        normalized = normalize_column_name(name)
+        if normalized in {"observacao", "obs", "comentario"}:
+            monitoring = monitoramento_da_observacao(value)
+        elif normalized in {"municipio_da_cobranca", "municipio_cobranca"}:
+            municipality = str(value or "").strip()
+    return monitoring, municipality
 
 
 def _performance_rw_table(cross: pd.DataFrame, observations: pd.DataFrame) -> pd.DataFrame:
-    columns = ["Status Estadia", "Notas", "Data Emissão NF", "Placa", "Motorista", "Origem", "Destino", "Tipo", "Chegada Rastreador", "Saída Rastreador", "Monitoramento"]
+    columns = ["Status Estadia", "Notas", "Data Emissão NF", "Placa", "Motorista", "Origem", "Destino", "Município da Cobrança", "Tipo", "Chegada Rastreador", "Saída Rastreador", "Monitoramento"]
     if cross.empty:
         return pd.DataFrame(columns=columns)
     summary = _build_cross_summary_table(cross)
-    monitoring = {int(row["id"]): _monitoring_from_lcte_json(row.get("dados_json")) for row in observations.to_dict("records")}
+    summary = summary[summary["Status Estadia"].eq("ESTADIA")].copy()
+    fields = {int(row["id"]): _performance_fields_from_lcte_json(row.get("dados_json")) for row in observations.to_dict("records")}
     return pd.DataFrame({
-        "Status Estadia": summary["Status Estadia"].fillna(""),
+        "Status Estadia": summary["Status Estadia"],
         "Notas": summary["Notas"].fillna(""),
         "Data Emissão NF": summary["Data Emissao NF"].fillna(""),
         "Placa": summary["Placa"].fillna(""),
         "Motorista": summary["motorista"].fillna(""),
         "Origem": summary["Origem"].fillna(""),
         "Destino": summary["Destino"].fillna(""),
+        "Município da Cobrança": summary["lcte_id"].map(lambda row_id: fields.get(_safe_int_value(row_id), ("", ""))[1]),
         "Tipo": summary["Tipo"].fillna(""),
         "Chegada Rastreador": summary["Chegada Rastreador"].fillna(""),
         "Saída Rastreador": summary["Saida Rastreador"].fillna(""),
-        "Monitoramento": summary["monitoramento"].where(summary["monitoramento"].fillna("").ne(""), summary["lcte_id"].map(monitoring)).fillna(""),
+        "Monitoramento": summary["monitoramento"].where(summary["monitoramento"].fillna("").ne(""), summary["lcte_id"].map(lambda row_id: fields.get(_safe_int_value(row_id), ("", ""))[0])).fillna(""),
     }, columns=columns)
 
 
@@ -2235,394 +2180,6 @@ def render_cross_page(usuario: str) -> None:
         disabled=filtered.empty,
     )
     render_dataframe(_with_estadia_display_columns(filtered), height=560, max_rows=1000)
-
-
-def _toggle_estadias_teste_card(card_key: str) -> None:
-    cards = dict(st.session_state.get("estadias_teste_cards_ativos", {}))
-    definition = CARD_DEFINITIONS.get(card_key, {})
-    group = str(definition.get("group") or card_key)
-    if cards.get(group) == card_key:
-        cards.pop(group, None)
-    else:
-        cards[group] = card_key
-    st.session_state.estadias_teste_cards_ativos = cards
-
-
-def _clear_estadias_teste_cards() -> None:
-    st.session_state.estadias_teste_cards_ativos = {}
-
-
-def _clear_estadias_teste_all_filters() -> None:
-    st.session_state.estadias_teste_cards_ativos = {}
-    for key, value in {
-        "estadias_teste_lcte_rastreador_placa": DEFAULT_TEST_PLATE,
-        "estadias_teste_cte": "",
-        "estadias_teste_nf": "",
-        "estadias_teste_origem": "",
-        "estadias_teste_destino": "",
-        "estadias_teste_cliente": "",
-        "estadias_teste_motorista": "",
-        "estadias_teste_status": "",
-        "estadias_teste_possivel_estadia": "",
-        "estadias_teste_tipo_data": "Por mes",
-        "estadias_teste_periodo_inicio": "",
-        "estadias_teste_periodo_fim": "",
-    }.items():
-        st.session_state[key] = value
-    st.session_state.pop("estadias_teste_anos", None)
-    st.session_state.pop("estadias_teste_meses", None)
-    st.session_state.pop("estadias_teste_lcte_rastreador_result", None)
-
-
-def _select_all_estadias_teste_months(month_options: list[str]) -> None:
-    st.session_state.estadias_teste_meses = list(month_options)
-
-
-def _clear_estadias_teste_months() -> None:
-    st.session_state.estadias_teste_meses = []
-
-
-def _remove_estadias_teste_filter(kind: str, value: str = "") -> None:
-    if kind == "card":
-        cards = dict(st.session_state.get("estadias_teste_cards_ativos", {}))
-        cards.pop(value, None)
-        st.session_state.estadias_teste_cards_ativos = cards
-    elif kind == "field":
-        st.session_state[value] = ""
-    elif kind == "date":
-        st.session_state.estadias_teste_tipo_data = "Por mes"
-        st.session_state.estadias_teste_meses = []
-        st.session_state.estadias_teste_periodo_inicio = ""
-        st.session_state.estadias_teste_periodo_fim = ""
-    elif kind == "all_cards":
-        _clear_estadias_teste_cards()
-
-
-def _render_teste_active_filters(filters: dict[str, object]) -> None:
-    active: list[tuple[str, str, str]] = []
-    if filters.get("tipo_data") == "Periodo personalizado":
-        active.append(("Periodo", f"{filters.get('periodo_inicio') or '-'} ate {filters.get('periodo_fim') or '-'}", "date"))
-    elif filters.get("meses"):
-        labels = ", ".join(month_label(str(month)) for month in filters.get("meses", []))
-        active.append(("Mes", labels, "date"))
-    if filters.get("placa"):
-        active.append(("Placa", str(filters.get("placa")), "field:estadias_teste_lcte_rastreador_placa"))
-    for label, key in [
-        ("CT-e", "estadias_teste_cte"),
-        ("NF", "estadias_teste_nf"),
-        ("Origem", "estadias_teste_origem"),
-        ("Destino", "estadias_teste_destino"),
-        ("Cliente", "estadias_teste_cliente"),
-        ("Motorista", "estadias_teste_motorista"),
-        ("Status", "estadias_teste_status"),
-        ("Possivel estadia", "estadias_teste_possivel_estadia"),
-    ]:
-        value = st.session_state.get(key)
-        if value:
-            active.append((label, str(value), f"field:{key}"))
-    for group, card_key in (filters.get("cards") or {}).items():
-        definition = CARD_DEFINITIONS.get(str(card_key))
-        if definition:
-            active.append(("Card", definition["label"], f"card:{group}"))
-    st.subheader("FILTROS ATIVOS")
-    if not active:
-        st.caption("Nenhum filtro ativo alem do contexto inicial.")
-        return
-    cols = st.columns(min(len(active), 4))
-    for index, (label, value, token) in enumerate(active):
-        with cols[index % len(cols)]:
-            st.caption(f"{label}: {value}")
-            kind, _, payload = token.partition(":")
-            st.button("Remover", key=f"estadias_teste_remove_{index}_{kind}_{payload}", on_click=_remove_estadias_teste_filter, args=(kind, payload), use_container_width=True)
-
-
-def _render_teste_cards(counts: dict[str, int], active_cards: dict[str, str]) -> None:
-    st.subheader("Cards interativos")
-    rows = [
-        ["viagens_lcte", "com_rastreador", "sem_rastreador", "control_completo"],
-        ["control_incompleto", "sem_control", "origem_identificada", "destino_identificada"],
-        ["permanencia_gps", "possivel_estadia", "nao_calculadas", "inconsistencias"],
-    ]
-    for row in rows:
-        cols = st.columns(len(row))
-        for col, card_key in zip(cols, row):
-            definition = CARD_DEFINITIONS[card_key]
-            active = active_cards.get(definition["group"]) == card_key
-            border = "#2563eb" if active else "#d1d5db"
-            background = "#eff6ff" if active else "#ffffff"
-            badge = "FILTRO ATIVO" if active else "Clique para filtrar"
-            col.markdown(
-                f"""
-                <div style="border:2px solid {border};background:{background};border-radius:8px;padding:10px 12px;margin-bottom:6px;min-height:86px;">
-                    <div style="font-size:12px;color:#475569;font-weight:700;">{badge}</div>
-                    <div style="font-size:14px;color:#111827;font-weight:700;">{definition['label']}</div>
-                    <div style="font-size:26px;color:#111827;font-weight:800;line-height:1.2;">{counts.get(card_key, 0)}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            label = f"{'[ATIVO] ' if active else ''}{definition['label']}\n{counts.get(card_key, 0)}"
-            help_text = "Filtro ativo - clique novamente para remover" if active else "Clique para filtrar"
-            col.button(label, key=f"estadias_teste_card_{card_key}", on_click=_toggle_estadias_teste_card, args=(card_key,), help=help_text, use_container_width=True)
-
-
-def _filters_export_df(usuario: str, filters: dict[str, object], total_rows: int) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {"Filtro": "data_hora_exportacao", "Valor": brasilia_now_iso()},
-            {"Filtro": "usuario", "Valor": usuario},
-            {"Filtro": "tipo_data", "Valor": filters.get("tipo_data") or ""},
-            {"Filtro": "anos", "Valor": ", ".join(map(str, filters.get("anos") or []))},
-            {"Filtro": "meses", "Valor": ", ".join(month_label(str(month)) for month in filters.get("meses", []))},
-            {"Filtro": "periodo_inicio", "Valor": filters.get("periodo_inicio") or ""},
-            {"Filtro": "periodo_fim", "Valor": filters.get("periodo_fim") or ""},
-            {"Filtro": "placa", "Valor": filters.get("placa") or ""},
-            {"Filtro": "cards", "Valor": ", ".join(active_card_labels(filters.get("cards") or {}))},
-            {"Filtro": "cte", "Valor": filters.get("cte") or ""},
-            {"Filtro": "nf", "Valor": filters.get("nf") or ""},
-            {"Filtro": "origem", "Valor": filters.get("origem") or ""},
-            {"Filtro": "destino", "Valor": filters.get("destino") or ""},
-            {"Filtro": "cliente", "Valor": filters.get("cliente") or ""},
-            {"Filtro": "motorista", "Valor": filters.get("motorista") or ""},
-            {"Filtro": "status", "Valor": filters.get("status") or ""},
-            {"Filtro": "possivel_estadia", "Valor": filters.get("possivel_estadia") or ""},
-            {"Filtro": "quantidade_registros", "Valor": total_rows},
-        ]
-    )
-
-
-def render_teste_lcte_rastreador_page(usuario: str = "sistema") -> None:
-    st.title("TESTE LCTE x RASTREADOR")
-    st.caption("Painel de teste isolado: LCTE define a viagem, Rastreador calcula permanencias por GPS e CONTROL aparece apenas para auditoria.")
-    st.session_state.setdefault("estadias_teste_lcte_rastreador_placa", DEFAULT_TEST_PLATE)
-    st.session_state.setdefault("estadias_teste_cards_ativos", {})
-    st.session_state.setdefault("estadias_teste_tipo_data", "Por mes")
-
-    with st.expander("Parametros do teste", expanded=True):
-        col_a, col_b, col_c, col_d = st.columns(4)
-        placa = col_a.text_input("Placa", key="estadias_teste_lcte_rastreador_placa")
-        limite_viagens = int(col_d.number_input("Limite de viagens", min_value=1, max_value=50000, value=5000, step=100, key="estadias_teste_limite"))
-        col_e, col_f, col_g, col_h = st.columns(4)
-        janela_antes = float(col_e.number_input("Inicio janela: horas antes LCTE", min_value=0.0, max_value=240.0, value=24.0, step=1.0, key="estadias_teste_janela_antes"))
-        janela_depois = float(col_f.number_input("Fim janela: dias apos LCTE", min_value=1.0, max_value=30.0, value=7.0, step=1.0, key="estadias_teste_janela_depois"))
-        raio_metros = float(col_g.number_input("Raio ponto GPS (m)", min_value=50.0, max_value=10000.0, value=1000.0, step=50.0, key="estadias_teste_raio"))
-        extra_metros = float(col_h.number_input("Margem raio (m)", min_value=0.0, max_value=5000.0, value=300.0, step=50.0, key="estadias_teste_extra_raio"))
-        col_i, col_j, col_k, col_l = st.columns(4)
-        tolerancia_sinal = float(col_i.number_input("Tolerancia sem sinal (min)", min_value=1.0, max_value=1440.0, value=30.0, step=5.0, key="estadias_teste_tolerancia_sinal"))
-        tolerancia_saida = float(col_j.number_input("Tolerancia fora do ponto (min)", min_value=0.0, max_value=1440.0, value=15.0, step=5.0, key="estadias_teste_tolerancia_saida"))
-        min_pontos = int(col_k.number_input("Minimo pontos permanencia", min_value=1, max_value=20, value=1, step=1, key="estadias_teste_min_pontos"))
-        tempo_minimo = float(col_l.number_input("Tempo minimo parado (min)", min_value=0.0, max_value=1440.0, value=30.0, step=5.0, key="estadias_teste_tempo_minimo"))
-        col_m, col_n = st.columns(2)
-        franquia_horas = float(col_m.number_input("Franquia para possivel estadia (h)", min_value=0.0, max_value=240.0, value=24.0, step=1.0, key="estadias_teste_franquia"))
-        limitar_proxima = col_n.checkbox("Limitar janela pela proxima viagem LCTE da mesma placa", value=True, key="estadias_teste_limitar_proxima")
-
-    process_signature = {
-        "placa": placa,
-        "limite_viagens": limite_viagens,
-        "janela_antes": janela_antes,
-        "janela_depois": janela_depois,
-        "raio_metros": raio_metros,
-        "extra_metros": extra_metros,
-        "tolerancia_sinal": tolerancia_sinal,
-        "tolerancia_saida": tolerancia_saida,
-        "min_pontos": min_pontos,
-        "tempo_minimo": tempo_minimo,
-        "franquia_horas": franquia_horas,
-        "limitar_proxima": limitar_proxima,
-    }
-    processar = st.button("Processar teste LCTE x Rastreador", type="primary", use_container_width=True)
-    if processar or "estadias_teste_lcte_rastreador_result" not in st.session_state or st.session_state.get("estadias_teste_process_signature") != process_signature:
-        with st.spinner("Processando teste com LCTE como base mestre e Rastreador como fonte de permanencia..."):
-            result, summary, diagnostic, timeline = build_teste_lcte_rastreador(
-                placa=placa,
-                janela_antes_horas=janela_antes,
-                janela_depois_dias=janela_depois,
-                raio_metros=raio_metros,
-                tolerancia_raio_extra_metros=extra_metros,
-                tolerancia_sem_sinal_minutos=tolerancia_sinal,
-                tolerancia_fora_cerca_minutos=tolerancia_saida,
-                min_pontos_permanencia=min_pontos,
-                tempo_minimo_parado_minutos=tempo_minimo,
-                franquia_horas=franquia_horas,
-                limitar_proxima_viagem=limitar_proxima,
-                limite_viagens=limite_viagens,
-            )
-        st.session_state.estadias_teste_lcte_rastreador_result = result
-        st.session_state.estadias_teste_lcte_rastreador_summary = summary
-        st.session_state.estadias_teste_lcte_rastreador_diagnostic = diagnostic
-        st.session_state.estadias_teste_lcte_rastreador_timeline = timeline
-        st.session_state.estadias_teste_process_signature = process_signature
-
-    result = ensure_panel_filter_columns(st.session_state.get("estadias_teste_lcte_rastreador_result", pd.DataFrame()))
-    diagnostic = st.session_state.get("estadias_teste_lcte_rastreador_diagnostic", pd.DataFrame())
-    timeline = st.session_state.get("estadias_teste_lcte_rastreador_timeline", pd.DataFrame())
-    if not isinstance(result, pd.DataFrame) or result.empty:
-        st.info("Informe a placa e processe o teste. O padrao inicial e AIW8A04.")
-        return
-
-    years = available_years(result)
-    latest_month = latest_month_with_data(result)
-    latest_year = int(latest_month[:4]) if latest_month else (years[-1] if years else 0)
-    if "estadias_teste_anos" not in st.session_state:
-        st.session_state.estadias_teste_anos = [latest_year] if latest_year else years
-    if "estadias_teste_meses" not in st.session_state:
-        st.session_state.estadias_teste_meses = [latest_month] if latest_month else []
-
-    st.subheader("Filtro de data pelo inicio da viagem")
-    col_data_a, col_data_b, col_data_c, col_data_d = st.columns(4)
-    tipo_data = col_data_a.selectbox("TIPO DE FILTRO DE DATA", ["Por mes", "Periodo personalizado"], key="estadias_teste_tipo_data")
-    anos = col_data_b.multiselect("ANO DE INICIO DA VIAGEM", years, key="estadias_teste_anos")
-    month_options = available_months(result, anos)
-    month_label_map = {month: month_label(month) for month in month_options}
-    if tipo_data == "Por mes":
-        st.session_state.estadias_teste_meses = [month for month in st.session_state.get("estadias_teste_meses", []) if month in month_options]
-        btn_month_a, btn_month_b = st.columns(2)
-        btn_month_a.button("Selecionar todos os meses", key="estadias_teste_select_all_months", on_click=_select_all_estadias_teste_months, args=(month_options,), use_container_width=True)
-        btn_month_b.button("Limpar meses", key="estadias_teste_clear_months", on_click=_clear_estadias_teste_months, use_container_width=True)
-        meses = col_data_c.multiselect(
-            "MES DE INICIO DA VIAGEM",
-            month_options,
-            format_func=lambda value: month_label_map.get(value, value),
-            key="estadias_teste_meses",
-        )
-        col_data_d.caption(f"Mes ativo: {', '.join(month_label(month) for month in meses) if meses else 'Todos'}")
-        periodo_inicio = ""
-        periodo_fim = ""
-    else:
-        meses = []
-        periodo_inicio = col_data_c.text_input("Data inicial", key="estadias_teste_periodo_inicio", placeholder="dd/mm/aaaa")
-        periodo_fim = col_data_d.text_input("Data final", key="estadias_teste_periodo_fim", placeholder="dd/mm/aaaa")
-        st.info("Periodo personalizado ativo: o filtro mensal fica substituido por data inicial/final.")
-
-    st.subheader("Filtros de texto")
-    col_a, col_b, col_c, col_d = st.columns(4)
-    status_options = ["", *sorted(result.get("Status", pd.Series(dtype=str)).fillna("").astype(str).unique().tolist())]
-    status = col_a.selectbox("Status", status_options, key="estadias_teste_status")
-    origem = col_b.text_input("Origem contem", key="estadias_teste_origem")
-    destino = col_c.text_input("Destino contem", key="estadias_teste_destino")
-    possivel_estadia = col_d.selectbox("Possivel estadia", ["", "SIM", "NAO"], key="estadias_teste_possivel_estadia")
-    col_e, col_f, col_g, col_h = st.columns(4)
-    cliente = col_e.text_input("Cliente contem", key="estadias_teste_cliente")
-    motorista = col_f.text_input("Motorista contem", key="estadias_teste_motorista")
-    cte = col_g.text_input("CT-e contem", key="estadias_teste_cte")
-    nf = col_h.text_input("NF contem", key="estadias_teste_nf")
-
-    filters = {
-        "tipo_data": tipo_data,
-        "anos": anos,
-        "meses": meses,
-        "periodo_inicio": periodo_inicio,
-        "periodo_fim": periodo_fim,
-        "placa": placa,
-        "cte": cte,
-        "nf": nf,
-        "origem": origem,
-        "destino": destino,
-        "cliente": cliente,
-        "motorista": motorista,
-        "status": status,
-        "possivel_estadia": possivel_estadia,
-        "cards": dict(st.session_state.get("estadias_teste_cards_ativos", {})),
-    }
-
-    base_sem_cards = aplicar_filtros_painel_estadias(result, filters, include_card_filters=False)
-    counts = card_counts(result, filters)
-    _render_teste_cards(counts, filters["cards"])
-    col_clear_a, col_clear_b = st.columns(2)
-    col_clear_a.button("LIMPAR FILTROS DOS CARDS", on_click=_clear_estadias_teste_cards, use_container_width=True)
-    col_clear_b.button("LIMPAR TODOS OS FILTROS", on_click=_clear_estadias_teste_all_filters, use_container_width=True)
-    _render_teste_active_filters(filters)
-    filtered = aplicar_filtros_painel_estadias(result, filters, include_card_filters=True)
-
-    all_columns = filtered.columns.tolist()
-    default_columns = [column for column in DEFAULT_VISIBLE_COLUMNS if column in all_columns]
-    if "estadias_teste_colunas_visiveis" in st.session_state:
-        st.session_state.estadias_teste_colunas_visiveis = [column for column in st.session_state.estadias_teste_colunas_visiveis if column in all_columns]
-    selected_columns = st.multiselect(
-        "Colunas visiveis",
-        all_columns,
-        default=st.session_state.get("estadias_teste_colunas_visiveis", default_columns),
-        key="estadias_teste_colunas_visiveis",
-    )
-    if not selected_columns:
-        selected_columns = default_columns
-
-    filtered_diagnostic = diagnostic[diagnostic["lcte_id"].isin(filtered["lcte_id"])] if isinstance(diagnostic, pd.DataFrame) and not diagnostic.empty and not filtered.empty else diagnostic
-    filtered_timeline = timeline[timeline["lcte_id"].isin(filtered["lcte_id"])] if isinstance(timeline, pd.DataFrame) and not timeline.empty and not filtered.empty else timeline
-    export_filters = _filters_export_df(usuario, filters, len(filtered))
-    col_a, col_b = st.columns(2)
-    col_a.download_button(
-        "Exportar visao atual",
-        dataframe_to_excel({"visao_atual": filtered[selected_columns], "FILTROS APLICADOS": export_filters}),
-        "teste_lcte_rastreador_visao.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        disabled=filtered.empty,
-    )
-    col_b.download_button(
-        "Exportar diagnostico completo",
-        dataframe_to_excel({**export_teste_lcte_rastreador_sheets(filtered, filtered_diagnostic, filtered_timeline), "FILTROS APLICADOS": export_filters}),
-        "teste_lcte_rastreador_diagnostico.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        disabled=filtered.empty,
-    )
-
-    st.write(f"REGISTROS EXIBIDOS: {len(filtered)} DE {len(base_sem_cards)}")
-    render_dataframe(filtered[selected_columns], height=540, max_rows=1000)
-    if filtered.empty:
-        st.warning("Nenhuma viagem encontrada para a combinacao atual de filtros.")
-        return
-
-    st.subheader("Diagnostico da viagem")
-    options = [
-        f"{row.get('lcte_id')} | {row.get('Placa') or '-'} | CT-e {row.get('CT-e') or '-'} | NF {row.get('NF') or '-'} | {row.get('Status') or '-'}"
-        for _, row in filtered.iterrows()
-    ]
-    selected = st.selectbox("Viagem", options, key="estadias_teste_viagem_detalhe")
-    selected_id = int(str(selected).split("|", 1)[0].strip()) if selected else 0
-    detail = filtered[filtered["lcte_id"].astype(int).eq(selected_id)].head(1)
-    if not detail.empty:
-        row = detail.iloc[0]
-        metric_grid(
-            {
-                "Encontrou no LCTE": "SIM",
-                "Encontrou no CONTROL": row.get("CONTROL localizado?") or "NAO",
-                "Encontrou no Rastreador": "SIM" if int(row.get("Pontos rastreador janela") or 0) > 0 else "NAO",
-                "Encontrou origem GPS": "SIM" if str(row.get("Chegada origem GPS") or "") else "NAO",
-                "Encontrou destino GPS": "SIM" if str(row.get("Chegada destino GPS") or "") else "NAO",
-                "Calculou permanencia GPS": "SIM" if row.get("Status") in ["GPS CALCULADO", "GPS PARCIAL"] else "NAO",
-                "Control bloqueou calculo": "NAO",
-                "Possivel estadia": row.get("Possivel estadia?") or "NAO",
-            },
-            columns=4,
-        )
-        st.write(
-            {
-                "Motivo": row.get("Motivo"),
-                "Diagnostico": row.get("Diagnostico"),
-                "Tempo origem GPS": row.get("Tempo origem GPS"),
-                "Tempo destino GPS": row.get("Tempo destino GPS"),
-                "Tempo operacional GPS": row.get("Tempo operacional GPS"),
-                "Confiança da Permanência (%)": row.get("Confiança da Permanência (%)"),
-                "Motivo confirmação saída": row.get("Motivo confirmação saída"),
-                "Interrupções ignoradas": row.get("Interrupções ignoradas"),
-                "Maior distância temporária da cerca origem (km)": row.get("Maior distância temporária da cerca origem (km)"),
-                "Maior distância temporária da cerca destino (km)": row.get("Maior distância temporária da cerca destino (km)"),
-                "Tempo oscilação absorvido origem (min)": row.get("Tempo oscilação absorvido origem (min)"),
-                "Tempo oscilação absorvido destino (min)": row.get("Tempo oscilação absorvido destino (min)"),
-                "Data inicio viagem": row.get("Data inicio viagem"),
-                "Fonte data inicio viagem": row.get("Fonte inicio viagem"),
-                "Km percorrido": row.get("Km percorrido"),
-                "Distancia ponto carga km": row.get("Distancia ponto carga km"),
-                "Distancia ponto descarga km": row.get("Distancia ponto descarga km"),
-            }
-        )
-        with st.expander("Timeline LCTE / GPS / CONTROL", expanded=True):
-            render_dataframe(timeline[timeline["lcte_id"].astype(int).eq(selected_id)] if isinstance(timeline, pd.DataFrame) and not timeline.empty else pd.DataFrame(), height=260, max_rows=50)
-        with st.expander("Log detalhado", expanded=False):
-            st.json(row.get("diagnostico_json") or "{}")
-            st.json(row.get("log_processamento_json") or "[]")
 
 
 def render_logs_page() -> None:

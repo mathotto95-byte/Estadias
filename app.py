@@ -37,14 +37,12 @@ from src.database.connection import get_connection
 from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_config_page,
-    render_control_page,
     render_cross_page,
     render_dashboard_page,
     render_imports_page,
     render_logs_page,
     render_performance_rw_page,
     render_rastreador_page,
-    render_teste_lcte_rastreador_page,
 )
 from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now, brasilia_now_iso
@@ -54,11 +52,9 @@ from src.utils.rw_theme import apply_theme, render_brand_header, render_login_he
 MENU = [
     "Dashboard",
     "Importacoes",
-    "Base CONTROL",
     "Relatorios Rastreador por Placa",
     "Estadias",
     "PerformanceRw",
-    "TESTE LCTE x RASTREADOR",
     "Logs de Importacao",
     "Configuracoes",
     "Backup do Banco",
@@ -455,16 +451,12 @@ def main() -> None:
         render_dashboard_page()
     elif page == "Importacoes":
         render_imports_page(username, "ADMIN")
-    elif page == "Base CONTROL":
-        render_control_page()
     elif page == "Relatorios Rastreador por Placa":
         render_rastreador_page()
     elif page == "Estadias":
         render_cross_page(username)
     elif page == "PerformanceRw":
         render_performance_rw_page()
-    elif page == "TESTE LCTE x RASTREADOR":
-        render_teste_lcte_rastreador_page(username)
     elif page == "Logs de Importacao":
         render_logs_page()
     elif page == "Configuracoes":
