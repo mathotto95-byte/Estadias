@@ -18,12 +18,14 @@ from estadias_app.github_backup import (
     github_auto_backup_enabled,
     github_backup_configured,
     github_diagnostic,
+    github_backup_versions,
     github_settings,
     import_backup_json_bytes,
     imported_database_counts,
     imported_database_tables,
     prune_history,
     restore_from_github_if_empty,
+    restore_github_version,
     restore_json_bytes,
     table_counts,
     test_github_connection,
@@ -208,11 +210,11 @@ def _render_github_sidebar() -> None:
     st.sidebar.divider()
     st.sidebar.subheader("Backup GitHub")
     st.sidebar.caption("Destino: arquivos JSON no GitHub, nao Release.")
-    st.sidebar.caption("Automatico salva resultados; manual salva resultados + importacoes.")
+    st.sidebar.caption("Duas copias completas: atual e anterior.")
     if github_backup_configured():
         st.sidebar.caption(f"Repo: {settings['repository']} | Branch: {settings['branch']}")
         st.sidebar.caption(f"Resultado: {settings['latest_path']}")
-        st.sidebar.caption(f"Importacoes: {settings['imports_path']}")
+        st.sidebar.caption(f"Anterior: {settings['previous_path']}")
     else:
         st.sidebar.warning("GitHub backup nao configurado.")
     st.sidebar.caption(f"Token: {diagnostic.get('token_masked')} | {diagnostic.get('token_length', 0)} caracteres")
@@ -256,7 +258,7 @@ def _render_github_sidebar() -> None:
         "Limpar historico antigo de backups",
         use_container_width=True,
         disabled=not github_backup_configured(),
-        help="Remove snapshots antigos de backups/history, mantendo apenas os mais recentes. Reduz o tamanho do repositorio.",
+        help="Remove os arquivos historicos antigos. Execute apos confirmar as duas copias completas.",
     ):
         prune_result = prune_history()
         if prune_result.get("status") == "SUCESSO":
@@ -308,6 +310,24 @@ def _database_zip() -> bytes:
 def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
     st.caption("O backup salva resultados, posicoes resumidas das estadias para PDF e bases leves. O rastreador bruto e temporario.")
+    if github_backup_configured():
+        if st.button("Verificar copias no GitHub", use_container_width=True):
+            try:
+                st.session_state["estadias_github_versions"] = github_backup_versions()
+            except Exception as exc:
+                st.error(f"Falha ao consultar backups: {exc}")
+        versions = st.session_state.get("estadias_github_versions") or []
+        if versions:
+            st.dataframe(pd.DataFrame(versions), use_container_width=True, hide_index=True)
+            selection = st.selectbox("Copia para recuperar", [item["label"] for item in versions])
+            confirmation = st.text_input("Digite RESTAURAR GITHUB para substituir o banco", key="confirm_github_restore")
+            if st.button("Restaurar copia selecionada", disabled=confirmation.strip().upper() != "RESTAURAR GITHUB", use_container_width=True):
+                try:
+                    result = restore_github_version(selection)
+                    st.session_state["estadias_database_restore_result"] = result
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Falha ao restaurar a copia: {exc}")
     counts = table_counts(BACKUP_TABLES)
     import_counts = imported_database_counts()
     total = sum(counts.values())
@@ -412,7 +432,7 @@ def render_backup_page() -> None:
     st.subheader("Importar backup JSON")
     last_restore = st.session_state.get("estadias_database_restore_result")
     if isinstance(last_restore, dict):
-        schema_label = "importacoes" if last_restore.get("schema") == "estadias_importacoes_backup_v1" else "resultados"
+        schema_label = "completo" if last_restore.get("schema") == "estadias_completo_v1" else ("importacoes" if last_restore.get("schema") == "estadias_importacoes_backup_v1" else "resultados")
         st.success(
             f"Ultimo backup de {schema_label} importado. "
             f"Restaurados: {last_restore.get('restored', 0)} | "
@@ -451,7 +471,7 @@ def render_backup_page() -> None:
         try:
             result = restore_json_bytes(uploaded.getvalue(), mode)
             st.session_state["estadias_database_restore_result"] = result
-            schema_label = "importacoes" if result.get("schema") == "estadias_importacoes_backup_v1" else "resultados"
+            schema_label = "completo" if result.get("schema") == "estadias_completo_v1" else ("importacoes" if result.get("schema") == "estadias_importacoes_backup_v1" else "resultados")
             st.success(f"Backup de {schema_label} importado. Restaurados: {result.get('restored', 0)} | Ignorados: {result.get('ignored', 0)}")
             st.caption("Depois de importar resultado e importacoes, use Recalcular regras no Cruzamento para aplicar a logica atual.")
             st.rerun()

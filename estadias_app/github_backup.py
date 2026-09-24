@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import threading
 import time
-import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -70,10 +71,9 @@ IMPORT_BACKUP_TABLES = [
     CONTROL_NORMALIZED_TABLE,
 ]
 
-# Quantidade de snapshots historicos mantidos em backups/history no GitHub.
-# Sem essa poda, cada backup automatico adiciona um arquivo novo para sempre,
-# fazendo o repositorio (e o clone/deploy) crescer indefinidamente.
-HISTORY_RETENTION_KEEP = 10
+# Os dois arquivos fixos substituem o historico de snapshots avulsos.
+HISTORY_RETENTION_KEEP = 0
+_backup_lock = threading.Lock()
 
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
@@ -144,6 +144,7 @@ def github_settings() -> dict[str, Any]:
         "repository": _read_secret("GITHUB_REPOSITORY", "mathotto95-byte/Estadias"),
         "branch": _read_secret("GITHUB_BRANCH", "main"),
         "latest_path": _read_secret("GITHUB_BACKUP_PATH", "backups/estadias_latest.json"),
+        "previous_path": "backups/estadias_previous.json",
         "imports_path": _read_secret("GITHUB_IMPORTS_BACKUP_PATH", "backups/estadias_importacoes_latest.json"),
         "healthcheck_path": _read_secret("GITHUB_HEALTHCHECK_PATH", "backups/_healthcheck.json"),
         "auto_backup": _yes(_read_secret("GITHUB_AUTO_BACKUP", "SIM"), True),
@@ -211,12 +212,20 @@ def _remote_sha(settings: dict[str, Any], path: str) -> str:
 
 def _download_text(settings: dict[str, Any], path: str) -> str:
     url = _api_url(settings["repository"], path) + f"?ref={quote(settings['branch'])}"
-    result = _request_json("GET", url, settings["token"])
-    content = str(result.get("content") or "").replace("\n", "")
-    encoding = str(result.get("encoding") or "")
-    if encoding == "base64":
-        return base64.b64decode(content.encode("ascii")).decode("utf-8")
-    return content
+    request = Request(url, method="GET")
+    request.add_header("Accept", "application/vnd.github.raw+json")
+    request.add_header("Authorization", f"Bearer {settings['token']}")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+    with urlopen(request, timeout=120) as response:
+        raw = response.read()
+    if raw.startswith(b"{"):
+        try:
+            wrapper = json.loads(raw)
+            if isinstance(wrapper, dict) and wrapper.get("encoding") == "base64":
+                return base64.b64decode(str(wrapper.get("content") or "")).decode("utf-8")
+        except (ValueError, TypeError):
+            pass
+    return raw.decode("utf-8")
 
 
 def _upload_bytes(settings: dict[str, Any], path: str, content: bytes, message: str, retries: int = 3) -> dict[str, Any]:
@@ -265,22 +274,31 @@ def _delete_file(settings: dict[str, Any], path: str, sha: str, message: str) ->
 
 
 def prune_history(keep: int = HISTORY_RETENTION_KEEP) -> dict[str, Any]:
-    """Remove snapshots antigos de backups/history, mantendo apenas os `keep` mais recentes.
-
-    Os nomes dos arquivos comecam com timestamp (YYYYMMDD_HHMMSS), entao a
-    ordenacao alfabetica corresponde a ordenacao cronologica.
-    """
+    """Remove arquivos legados somente quando as duas copias completas existem."""
     settings = github_settings()
     if not github_backup_configured():
         return {"status": "NAO_CONFIGURADO", "removidos": 0}
+    if not all(_valid_complete_backup(_download_text(settings, path).encode("utf-8")) for path in (settings["latest_path"], settings["previous_path"])):
+        return {"status": "SEM_DUAS_COPIAS", "removidos": 0, "erros": 0}
+    return _prune_legacy_history(settings, keep)
+
+
+def _prune_legacy_history(settings: dict[str, Any], keep: int = 0) -> dict[str, Any]:
     entries = _list_directory(settings, "backups/history")
     files = sorted((item for item in entries if item.get("type") == "file"), key=lambda item: str(item.get("name") or ""))
-    excess = files[: max(len(files) - max(int(keep or 1), 1), 0)]
+    excess = files[: max(len(files) - max(int(keep), 0), 0)]
     removed = 0
     errors = 0
     for item in excess:
         try:
             _delete_file(settings, str(item.get("path")), str(item.get("sha")), "Poda de historico de backup (retencao automatica)")
+            removed += 1
+        except Exception:
+            errors += 1
+    legacy_sha = _remote_sha(settings, settings["imports_path"])
+    if legacy_sha:
+        try:
+            _delete_file(settings, settings["imports_path"], legacy_sha, "Remove backup separado legado")
             removed += 1
         except Exception:
             errors += 1
@@ -391,7 +409,7 @@ def import_backup_payload() -> dict[str, Any]:
         "generated_at": brasilia_now_iso(),
         "records": {table: len(values) for table, values in rows.items()},
         "tables": rows,
-        "observacao": "Bases normalizadas importadas para permitir recalculo posterior: LCTE, CONTROL e RASTREADOR.",
+        "observacao": "Bases normalizadas LCTE e CONTROL para permitir recalculo posterior.",
     }
 
 
@@ -401,6 +419,55 @@ def backup_json_bytes() -> bytes:
 
 def import_backup_json_bytes() -> bytes:
     return json.dumps(import_backup_payload(), ensure_ascii=False, indent=2, default=str).encode("utf-8")
+
+
+def _complete_backup_bytes() -> bytes:
+    results = backup_payload()
+    imports = import_backup_payload()
+    payload = {
+        "schema": "estadias_completo_v1",
+        "generated_at": brasilia_now_iso(),
+        "results": results,
+        "imports": imports,
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def _valid_complete_backup(content: bytes) -> bool:
+    try:
+        payload = json.loads(content)
+        if payload.get("schema") != "estadias_completo_v1":
+            return False
+        for key, schema, expected_tables in (
+            ("results", "estadias_backup_v1", BACKUP_TABLES),
+            ("imports", "estadias_importacoes_backup_v1", IMPORT_BACKUP_TABLES),
+        ):
+            part = payload.get(key) or {}
+            tables = part.get("tables") or {}
+            if part.get("schema") != schema or not all(isinstance(tables.get(table), list) for table in expected_tables):
+                return False
+            if any(int(part.get("records", {}).get(table, -1)) != len(tables[table]) for table in expected_tables):
+                return False
+        return any(count > 0 for key in ("results", "imports") for count in payload[key]["records"].values())
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
+def _restore_complete_backup(content: bytes, mode: str) -> dict[str, Any]:
+    if not _valid_complete_backup(content):
+        raise ValueError("Backup completo invalido ou incompleto.")
+    payload = json.loads(content)
+    results = restore_payload(payload["results"], mode)
+    imports = restore_payload(payload["imports"], mode)
+    return {
+        "status": "SUCESSO" if not (results["errors"] or imports["errors"]) else "PARCIAL",
+        "schema": payload["schema"],
+        "generated_at": payload.get("generated_at"),
+        "restored": results["restored"] + imports["restored"],
+        "ignored": results["ignored"] + imports["ignored"],
+        "errors": results["errors"] + imports["errors"],
+        "per_table": {**results["per_table"], **imports["per_table"]},
+    }
 
 
 def database_has_data() -> bool:
@@ -511,6 +578,8 @@ def restore_payload(payload: dict[str, Any], mode: str = "merge") -> dict[str, A
 
 def restore_json_bytes(content: bytes, mode: str = "merge") -> dict[str, Any]:
     payload = json.loads(content.decode("utf-8-sig"))
+    if payload.get("schema") == "estadias_completo_v1":
+        return _restore_complete_backup(content, mode)
     return restore_payload(payload, mode)
 
 
@@ -520,40 +589,65 @@ def backup_to_github(reason: str = "manual") -> dict[str, Any]:
         return {"status": "TOKEN_INVALIDO", "message": "GITHUB_TOKEN incompleto ou com reticencias.", "records": 0}
     if not github_backup_configured():
         return {"status": "NAO_CONFIGURADO", "message": "Configure GITHUB_TOKEN para habilitar backup no GitHub.", "records": 0}
-    has_results = database_has_data()
-    has_imports = imported_database_has_data()
-    include_imports = has_imports and str(reason or "").lower() in {"manual", "importacao", "importacoes", "restore", "restauracao"}
-    if not has_results and not include_imports:
-        return {"status": "IGNORADO_BASE_VAZIA", "message": "Backup GitHub ignorado: base vazia.", "records": 0}
-    stamp = brasilia_now_iso().replace("-", "").replace(":", "").replace("T", "_").replace("+", "_")
-    total_records = 0
-    uploaded: list[str] = []
+    if not _backup_lock.acquire(blocking=False):
+        return {"status": "EM_ANDAMENTO", "message": "Outro backup GitHub esta em andamento.", "records": 0}
     try:
-        if has_results:
-            content = backup_json_bytes()
-            payload = json.loads(content.decode("utf-8"))
-            history_path = f"backups/history/{stamp}_{uuid.uuid4().hex[:8]}_estadias_resultado.json"
-            _upload_bytes(settings, settings["latest_path"], content, f"Backup Estadias resultado latest ({reason})")
-            _upload_bytes(settings, history_path, content, f"Backup Estadias resultado historico ({reason})", retries=1)
-            total_records += sum(payload["records"].values())
-            uploaded.append(settings["latest_path"])
-        if include_imports:
-            import_content = import_backup_json_bytes()
-            import_payload = json.loads(import_content.decode("utf-8"))
-            import_history_path = f"backups/history/{stamp}_{uuid.uuid4().hex[:8]}_estadias_importacoes.json"
-            _upload_bytes(settings, settings["imports_path"], import_content, f"Backup Estadias importacoes latest ({reason})")
-            _upload_bytes(settings, import_history_path, import_content, f"Backup Estadias importacoes historico ({reason})", retries=1)
-            total_records += sum(import_payload["records"].values())
-            uploaded.append(settings["imports_path"])
+        content = _complete_backup_bytes()
+        if not _valid_complete_backup(content):
+            return {"status": "IGNORADO_BASE_VAZIA", "message": "Backup completo vazio ou incompleto; copias preservadas.", "records": 0}
+        payload = json.loads(content)
+        records = sum(sum(part["records"].values()) for part in (payload["results"], payload["imports"]))
+        previous = None
+        try:
+            previous = _download_text(settings, settings["latest_path"]).encode("utf-8")
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+        if previous and _valid_complete_backup(previous):
+            if hashlib.sha256(previous).digest() == hashlib.sha256(content).digest():
+                try:
+                    older = _download_text(settings, settings["previous_path"]).encode("utf-8")
+                except HTTPError as exc:
+                    if exc.code != 404:
+                        raise
+                    older = b""
+                if not _valid_complete_backup(older):
+                    _upload_bytes(settings, settings["previous_path"], content, f"Backup Estadias anterior inicial ({reason})")
+                cleanup = _prune_legacy_history(settings)
+                return {"status": "SEM_ALTERACAO", "message": "Duas copias completas confirmadas; backup atual ja corresponde ao banco.", "records": records, "cleanup": cleanup}
+            _upload_bytes(settings, settings["previous_path"], previous, f"Backup Estadias anterior ({reason})")
+        elif previous:
+            try:
+                old_schema = json.loads(previous).get("schema")
+            except (ValueError, TypeError, AttributeError):
+                old_schema = ""
+            if old_schema != "estadias_backup_v1":
+                return {"status": "ERRO", "message": "Backup atual invalido; copias preservadas para analise.", "records": 0}
+            try:
+                older = _download_text(settings, settings["previous_path"]).encode("utf-8")
+            except HTTPError as exc:
+                if exc.code != 404:
+                    raise
+                older = b""
+            if not _valid_complete_backup(older):
+                _upload_bytes(settings, settings["previous_path"], content, f"Backup Estadias anterior inicial ({reason})")
+        else:
+            _upload_bytes(settings, settings["previous_path"], content, f"Backup Estadias anterior inicial ({reason})")
+        _upload_bytes(settings, settings["latest_path"], content, f"Backup Estadias atual ({reason})")
+        try:
+            cleanup = _prune_legacy_history(settings)
+        except Exception:
+            cleanup = {"status": "PARCIAL"}
+        message = "Backups atual e anterior gravados no GitHub."
+        if cleanup.get("status") != "SUCESSO":
+            message += " Limpeza dos arquivos antigos pendente."
+        return {"status": "SUCESSO", "message": message, "records": records}
     except HTTPError as exc:
-        return {"status": "ERRO", "message": _github_http_error_message(exc), "records": total_records}
+        return {"status": "ERRO", "message": _github_http_error_message(exc), "records": 0}
     except (URLError, TimeoutError) as exc:
-        return {"status": "ERRO", "message": str(exc), "records": total_records}
-    try:
-        prune_history()
-    except Exception:
-        pass
-    return {"status": "SUCESSO", "message": f"Backup enviado para {', '.join(uploaded)}.", "records": total_records}
+        return {"status": "ERRO", "message": str(exc), "records": 0}
+    finally:
+        _backup_lock.release()
 
 
 def restore_from_github_if_empty() -> dict[str, Any]:
@@ -565,6 +659,29 @@ def restore_from_github_if_empty() -> dict[str, Any]:
     restored = 0
     restored_parts: list[str] = []
     try:
+        for path, label in ((settings["latest_path"], "atual"), (settings["previous_path"], "anterior")):
+            try:
+                complete = _download_text(settings, path).encode("utf-8")
+            except HTTPError as exc:
+                if exc.code == 404:
+                    continue
+                raise
+            if not _valid_complete_backup(complete):
+                continue
+            payload = json.loads(complete)
+            parts = []
+            if not database_has_data():
+                parts.append(("results", "resultados"))
+            if not imported_database_has_data():
+                parts.append(("imports", "importacoes"))
+            for key, part_label in parts:
+                result = restore_payload(payload[key], "replace")
+                restored += int(result["restored"])
+                restored_parts.append(part_label)
+                if result["status"] != "SUCESSO":
+                    return {"status": "ERRO", "message": f"Restauracao de {part_label} foi parcial. Verifique o banco.", "records": restored}
+            return {"status": "RESTAURADO", "message": f"Backup completo {label} restaurado: {', '.join(restored_parts)}.", "records": restored}
+        # Compatibilidade com os arquivos separados gravados antes da rotacao.
         if not database_has_data():
             raw = _download_text(settings, settings["latest_path"])
             payload = json.loads(raw)
@@ -596,6 +713,34 @@ def restore_from_github_if_empty() -> dict[str, Any]:
     return {"status": "RESTAURADO", "message": f"Backup GitHub restaurado: {', '.join(restored_parts)}.", "records": restored}
 
 
+def github_backup_versions() -> list[dict[str, Any]]:
+    if not github_backup_configured():
+        return []
+    settings = github_settings()
+    versions = []
+    for label, path in (("Atual", settings["latest_path"]), ("Anterior", settings["previous_path"])):
+        try:
+            content = _download_text(settings, path).encode("utf-8")
+            if not _valid_complete_backup(content):
+                continue
+            payload = json.loads(content)
+            versions.append({"label": label, "path": path, "generated_at": payload.get("generated_at", ""), "bytes": len(content)})
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise
+    return versions
+
+
+def restore_github_version(label: str) -> dict[str, Any]:
+    if not github_backup_configured():
+        raise ValueError("GitHub backup nao configurado.")
+    settings = github_settings()
+    paths = {"Atual": settings["latest_path"], "Anterior": settings["previous_path"]}
+    if label not in paths:
+        raise ValueError("Versao de backup invalida.")
+    return _restore_complete_backup(_download_text(settings, paths[label]).encode("utf-8"), "replace")
+
+
 def github_diagnostic() -> dict[str, Any]:
     settings = github_settings()
     token = settings["token"]
@@ -603,6 +748,7 @@ def github_diagnostic() -> dict[str, Any]:
         "repository": settings["repository"],
         "branch": settings["branch"],
         "latest_path": settings["latest_path"],
+        "previous_path": settings["previous_path"],
         "imports_path": settings["imports_path"],
         "destination_type": "Arquivo JSON no repositorio GitHub, nao GitHub Release",
         "token_masked": _mask_token(token),
