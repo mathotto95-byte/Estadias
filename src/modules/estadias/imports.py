@@ -14,6 +14,7 @@ from src.modules.estadias.logs import registrar_log_importacao
 from src.modules.estadias.normalizers import (
     extrair_placa_do_nome_arquivo,
     identificar_coluna_flexivel,
+    monitoramento_da_observacao,
     normalizar_data,
     normalizar_data_hora,
     normalizar_hora,
@@ -598,6 +599,7 @@ def normalize_lcte_row(row: dict[str, Any], columns: dict[str, str], base: dict[
         "latitude_destino": normalizar_valor_monetario(row_value(row, columns.get("latitude_destino", ""))),
         "longitude_destino": normalizar_valor_monetario(row_value(row, columns.get("longitude_destino", ""))),
         "observacao": _lcte_observation(row_value(row, columns.get("observacao", ""))),
+        "monitoramento": monitoramento_da_observacao(row_value(row, columns.get("observacao", ""))),
     }
     payload["chave_viagem"] = _make_trip_key(payload, sequence)
     return payload

@@ -42,6 +42,7 @@ from src.modules.estadias.page import (
     render_dashboard_page,
     render_imports_page,
     render_logs_page,
+    render_performance_rw_page,
     render_rastreador_page,
     render_teste_lcte_rastreador_page,
 )
@@ -54,7 +55,8 @@ MENU = [
     "Importacoes",
     "Base CONTROL",
     "Relatorios Rastreador por Placa",
-    "Cruzamento LCTE x CONTROL x Rastreador",
+    "Estadias",
+    "PerformanceRw",
     "TESTE LCTE x RASTREADOR",
     "Logs de Importacao",
     "Configuracoes",
@@ -94,7 +96,7 @@ def _apply_theme() -> None:
             --rw-muted: rgba(248, 250, 252, 0.72);
         }
         .stApp {background: var(--rw-bg) !important; color: var(--rw-text) !important;}
-        .block-container {padding-top: 1.1rem; max-width: 1550px;}
+        .block-container {padding: 1.1rem clamp(0.75rem, 2vw, 2rem) 2rem; max-width: none; width: 100%;}
         h1, h2, h3, label, p, span, div {color: var(--rw-text);}
         [data-testid="stCaptionContainer"] p {color: var(--rw-muted) !important;}
         [data-testid="stSidebar"] {background: var(--rw-navy) !important; border-right: 1px solid var(--rw-border);}
@@ -106,7 +108,7 @@ def _apply_theme() -> None:
             border: 1px solid var(--rw-border);
             border-radius: 8px;
         }
-        div[data-testid="stDataFrame"] {border: 1px solid var(--rw-border); border-radius: 8px; overflow: hidden;}
+        div[data-testid="stDataFrame"] {border: 1px solid var(--rw-border); border-radius: 8px; min-width: 0;}
         .stButton > button, .stDownloadButton > button {
             background: var(--rw-panel);
             border: 1px solid var(--rw-gold);
@@ -501,8 +503,10 @@ def main() -> None:
         render_control_page()
     elif page == "Relatorios Rastreador por Placa":
         render_rastreador_page()
-    elif page == "Cruzamento LCTE x CONTROL x Rastreador":
+    elif page == "Estadias":
         render_cross_page(username)
+    elif page == "PerformanceRw":
+        render_performance_rw_page()
     elif page == "TESTE LCTE x RASTREADOR":
         render_teste_lcte_rastreador_page(username)
     elif page == "Logs de Importacao":

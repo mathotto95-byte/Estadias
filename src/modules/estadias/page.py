@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import zipfile
 from io import BytesIO
@@ -27,6 +28,7 @@ from src.modules.estadias.repository import (
     read_control,
     read_cross,
     read_lcte,
+    read_lcte_observations,
     read_locais,
     read_parametros,
     read_preferencia_colunas,
@@ -61,6 +63,8 @@ from src.modules.estadias.teste_lcte_rastreador import (
     month_label,
 )
 from src.reports.exporter import dataframe_to_excel
+from src.normalizers.fields import normalize_column_name
+from src.modules.estadias.normalizers import monitoramento_da_observacao
 from src.utils.timezone import brasilia_now_iso
 
 
@@ -1597,6 +1601,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
         "nf",
         "cliente",
         "motorista",
+        "monitoramento",
         "data_emissao_nf",
         "data_inicio_viagem_referencia",
         "data_hora_carga",
@@ -1715,6 +1720,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "nf": row.get("nf") or "",
                     "cliente": row.get("cliente") or "",
                     "motorista": row.get("motorista") or "",
+                    "monitoramento": row.get("monitoramento") or "",
                     "data_emissao_nf": row.get("data_emissao_nf") or "",
                     "data_inicio_viagem_referencia": row.get("data_inicio_viagem_referencia") or row.get("data_hora_carga") or row.get("data_operacao") or "",
                     "data_hora_carga": row.get("data_hora_carga") or "",
@@ -1928,9 +1934,61 @@ def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
         st.json(row.get("log_processamento_json") or "[]")
 
 
+def _monitoring_from_lcte_json(raw_json: object) -> str:
+    try:
+        fields = json.loads(str(raw_json or "{}"))
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(fields, dict):
+        return ""
+    for name, value in fields.items():
+        if normalize_column_name(name) in {"observacao", "obs", "comentario"}:
+            return monitoramento_da_observacao(value)
+    return ""
+
+
+def _performance_rw_table(cross: pd.DataFrame, observations: pd.DataFrame) -> pd.DataFrame:
+    columns = ["Status Estadia", "Notas", "Data Emissão NF", "Placa", "Motorista", "Origem", "Destino", "Tipo", "Chegada Rastreador", "Saída Rastreador", "Monitoramento"]
+    if cross.empty:
+        return pd.DataFrame(columns=columns)
+    summary = _build_cross_summary_table(cross)
+    monitoring = {int(row["id"]): _monitoring_from_lcte_json(row.get("dados_json")) for row in observations.to_dict("records")}
+    return pd.DataFrame({
+        "Status Estadia": summary["Status Estadia"].fillna(""),
+        "Notas": summary["Notas"].fillna(""),
+        "Data Emissão NF": summary["Data Emissao NF"].fillna(""),
+        "Placa": summary["Placa"].fillna(""),
+        "Motorista": summary["motorista"].fillna(""),
+        "Origem": summary["Origem"].fillna(""),
+        "Destino": summary["Destino"].fillna(""),
+        "Tipo": summary["Tipo"].fillna(""),
+        "Chegada Rastreador": summary["Chegada Rastreador"].fillna(""),
+        "Saída Rastreador": summary["Saida Rastreador"].fillna(""),
+        "Monitoramento": summary["monitoramento"].where(summary["monitoramento"].fillna("").ne(""), summary["lcte_id"].map(monitoring)).fillna(""),
+    }, columns=columns)
+
+
+def render_performance_rw_page() -> None:
+    st.title("PerformanceRw")
+    cross = read_cross(200000)
+    if cross.empty:
+        st.info("Nenhuma viagem calculada em Estadias.")
+        return
+    ids = tuple(sorted(set(pd.to_numeric(cross["lcte_id"], errors="coerce").dropna().astype(int))))
+    panel = _performance_rw_table(cross, read_lcte_observations(ids))
+    st.download_button(
+        "Exportar CSV",
+        panel.to_csv(index=False, sep=";").encode("utf-8-sig"),
+        "performance_rw_estadias.csv",
+        "text/csv",
+        use_container_width=True,
+    )
+    render_dataframe(panel, height=620, max_rows=2000)
+
+
 def render_cross_page(usuario: str) -> None:
     col_title, col_plate, col_update = st.columns([2.2, 1.2, 1])
-    col_title.title("CRUZAMENTO LCTE x CONTROL x RASTREADOR")
+    col_title.subheader("Viagens")
     lcte_count = table_count(LCTE_NORMALIZED_TABLE)
     rastreador_count = table_count(RASTREADOR_NORMALIZED_TABLE)
     cross_count = table_count(CROSS_TABLE)

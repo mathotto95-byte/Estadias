@@ -13,6 +13,13 @@ from src.normalizers.fields import normalize_column_name, normalize_text, parse_
 PLATE_PATTERN = re.compile(r"[A-Z]{3}[0-9][A-Z0-9][0-9]{2}")
 
 
+def monitoramento_da_observacao(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    match = re.search(r"(?<!\d)\d{7}(?!\d)", str(value))
+    return match.group(0) if match else ""
+
+
 def normalizar_texto(value: Any) -> str:
     return normalize_text(value)
 

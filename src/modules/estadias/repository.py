@@ -452,6 +452,18 @@ def read_lcte(filters: dict[str, Any] | None = None, limit: int = 1000) -> pd.Da
     return read_filtered(LCTE_NORMALIZED_TABLE, filters, limit)
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
+def read_lcte_observations(ids: tuple[int, ...]) -> pd.DataFrame:
+    if not ids or not table_exists(LCTE_NORMALIZED_TABLE):
+        return pd.DataFrame(columns=["id", "dados_json"])
+    chunks = []
+    for start in range(0, len(ids), 400):
+        batch = ids[start : start + 400]
+        placeholders = ", ".join("?" for _ in batch)
+        chunks.append(read_sql(f"select id, dados_json from {LCTE_NORMALIZED_TABLE} where id in ({placeholders})", batch))
+    return pd.concat(chunks, ignore_index=True)
+
+
 def read_rastreador(filters: dict[str, Any] | None = None, limit: int = 1000) -> pd.DataFrame:
     return read_filtered(RASTREADOR_NORMALIZED_TABLE, filters, limit)
 
