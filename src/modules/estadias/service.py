@@ -1711,19 +1711,6 @@ def _main_reason(codes: list[str]) -> tuple[str, str]:
     return code, MOTIVOS.get(code, code)
 
 
-def _next_trip_by_plate(lcte: pd.DataFrame) -> dict[int, datetime | None]:
-    lcte_dt = lcte.copy()
-    lcte_dt["_trip_dt"] = pd.to_datetime(lcte_dt["data_hora_carga"].where(lcte_dt["data_hora_carga"].fillna("").astype(str).ne(""), lcte_dt["data_operacao"]), errors="coerce")
-    result: dict[int, datetime | None] = {}
-    for _, group in lcte_dt.sort_values("_trip_dt").groupby("placa_norm", dropna=False):
-        ids = group["id"].tolist()
-        dates = group["_trip_dt"].tolist()
-        for idx, trip_id in enumerate(ids):
-            next_dt = dates[idx + 1] if idx + 1 < len(dates) else None
-            result[int(trip_id)] = None if pd.isna(next_dt) else next_dt.to_pydatetime()
-    return result
-
-
 def _trip_neighbors_by_plate(lcte: pd.DataFrame) -> dict[int, tuple[datetime | None, datetime | None]]:
     if lcte.empty or "id" not in lcte.columns:
         return {}
@@ -2271,17 +2258,40 @@ def _row_signature(row: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _merge_incremental_rows(existing: pd.DataFrame, recalculated: list[dict[str, Any]], scoped: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[int], dict[str, int]]:
+    previous = existing.to_dict(orient="records") if not existing.empty else []
+    def lcte_id(row: dict[str, Any]) -> int:
+        try:
+            return int(row.get("lcte_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    by_lcte = {lcte_id(row): row for row in previous if lcte_id(row)}
+    ids = {lcte_id(row) for row in recalculated if lcte_id(row)}
+    rows = [row for row in previous if lcte_id(row) not in ids] if scoped else []
+    to_save: list[dict[str, Any]] = []
+    counts = {"registros_novos": 0, "registros_atualizados": 0, "concluidos_preservados": 0}
+    for row in recalculated:
+        old = by_lcte.get(lcte_id(row))
+        if old and int(old.get("concluido") or 0) == 1 and str(old.get("painel_atual") or "").upper() == "CONCLUIDOS":
+            chosen = old
+            counts["concluidos_preservados"] += 1
+        else:
+            chosen = row
+            if not old:
+                counts["registros_novos"] += 1
+            elif _row_signature(row) != _row_signature(old):
+                counts["registros_atualizados"] += 1
+        rows.append(chosen)
+        if scoped:
+            to_save.append(chosen)
+    return rows, to_save, ids, counts
+
+
 def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCallback | None = None, placa_filtro: str | None = None) -> tuple[pd.DataFrame, dict[str, int]]:
     plate_filter = _normalize_plate_candidate(placa_filtro)
     _emit_progress(progress_callback, 1, 100, "Lendo resultado anterior...")
     existing = repository.read_cross(300000)
-    existing_by_lcte: dict[int, dict[str, Any]] = {}
-    if not existing.empty and "lcte_id" in existing.columns:
-        for row in existing.to_dict(orient="records"):
-            try:
-                existing_by_lcte[int(row.get("lcte_id") or 0)] = row
-            except Exception:
-                continue
 
     def build_progress(current: int, total: int, message: str) -> None:
         mapped = 2 + int((current / max(total, 1)) * 86)
@@ -2289,17 +2299,7 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
 
     recalculated_rows = build_cross_rows(build_progress, plate_filter)
     _emit_progress(progress_callback, 89, 100, "Comparando registros novos e alterados...")
-    rows: list[dict[str, Any]] = []
-    rows_to_save: list[dict[str, Any]] = []
-    new_count = 0
-    changed_count = 0
-    preserved_count = 0
-    recalculated_ids: set[int] = set()
-    for row in recalculated_rows:
-        try:
-            recalculated_ids.add(int(row.get("lcte_id") or 0))
-        except Exception:
-            continue
+    rows, rows_to_save, recalculated_ids, counts = _merge_incremental_rows(existing, recalculated_rows, bool(plate_filter))
     if plate_filter and not recalculated_ids:
         summary = {
             "registros_novos": 0,
@@ -2313,32 +2313,6 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
         }
         _emit_progress(progress_callback, 100, 100, f"Nenhuma viagem LCTE encontrada para a placa {plate_filter}.")
         return existing, summary
-    if plate_filter and not existing.empty and "lcte_id" in existing.columns:
-        existing_rows = existing.to_dict(orient="records")
-        for old in existing_rows:
-            try:
-                old_lcte_id = int(old.get("lcte_id") or 0)
-            except Exception:
-                old_lcte_id = 0
-            if old_lcte_id not in recalculated_ids:
-                rows.append(old)
-    for row in recalculated_rows:
-        lcte_id = int(row.get("lcte_id") or 0)
-        old = existing_by_lcte.get(lcte_id)
-        if old and int(old.get("concluido") or 0) == 1 and str(old.get("painel_atual") or "").upper() == "CONCLUIDOS":
-            rows.append(old)
-            if plate_filter:
-                rows_to_save.append(old)
-            preserved_count += 1
-            continue
-        if not old:
-            new_count += 1
-        elif _row_signature(row) != _row_signature(old):
-            changed_count += 1
-        rows.append(row)
-        if plate_filter:
-            rows_to_save.append(row)
-
     _emit_progress(progress_callback, 95, 100, "Salvando resultado atualizado...")
     if plate_filter:
         repository.replace_cross_subset(rows_to_save, usuario, recalculated_ids)
@@ -2349,13 +2323,13 @@ def atualizar_cruzamento_incremental(usuario: str, progress_callback: ProgressCa
     result = pd.DataFrame(rows)
     summary_base = pd.DataFrame(recalculated_rows) if plate_filter else result
     summary = {
-        "registros_novos": int(new_count),
-        "registros_atualizados": int(changed_count),
+        "registros_novos": counts["registros_novos"],
+        "registros_atualizados": counts["registros_atualizados"],
         "viagens_control": int(summary_base.get("encontrou_control", pd.Series(dtype=int)).fillna(0).astype(int).eq(1).sum()) if not summary_base.empty else 0,
         "viagens_rastreador": int(summary_base.get("encontrou_rastreador", pd.Series(dtype=int)).fillna(0).astype(int).eq(1).sum()) if not summary_base.empty else 0,
         "estadias_identificadas": int(summary_base.get("painel_atual", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ESTADIAS").sum()) if not summary_base.empty else 0,
         "pendencias": int(summary_base.get("painel_atual", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("VERIFICACAO").sum()) if not summary_base.empty else 0,
-        "concluidos_preservados": int(preserved_count),
+        "concluidos_preservados": counts["concluidos_preservados"],
         "erros": int(summary_base.get("status_cruzamento", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ERRO").sum()) if not summary_base.empty else 0,
     }
     _emit_progress(progress_callback, 98, 100, "Registrando auditoria...")
@@ -2377,14 +2351,6 @@ def atualizar_cruzamento_incremental_placas(
 
     _emit_progress(progress_callback, 1, 100, "Lendo resultado anterior...")
     existing = repository.read_cross(300000)
-    existing_by_lcte: dict[int, dict[str, Any]] = {}
-    if not existing.empty and "lcte_id" in existing.columns:
-        for row in existing.to_dict(orient="records"):
-            try:
-                existing_by_lcte[int(row.get("lcte_id") or 0)] = row
-            except Exception:
-                continue
-
     recalculated_by_lcte: dict[int, dict[str, Any]] = {}
     total_plates = len(normalized_plates)
     for plate_index, plate in enumerate(normalized_plates, start=1):
@@ -2403,37 +2369,8 @@ def atualizar_cruzamento_incremental_placas(
                 recalculated_by_lcte[lcte_id] = row
 
     recalculated_rows = list(recalculated_by_lcte.values())
-    recalculated_ids = set(recalculated_by_lcte)
     _emit_progress(progress_callback, 89, 100, "Comparando registros novos e alterados...")
-    rows: list[dict[str, Any]] = []
-    rows_to_save: list[dict[str, Any]] = []
-    new_count = 0
-    changed_count = 0
-    preserved_count = 0
-
-    if not existing.empty and "lcte_id" in existing.columns:
-        for old in existing.to_dict(orient="records"):
-            try:
-                old_lcte_id = int(old.get("lcte_id") or 0)
-            except Exception:
-                old_lcte_id = 0
-            if old_lcte_id not in recalculated_ids:
-                rows.append(old)
-
-    for row in recalculated_rows:
-        lcte_id = int(row.get("lcte_id") or 0)
-        old = existing_by_lcte.get(lcte_id)
-        if old and int(old.get("concluido") or 0) == 1 and str(old.get("painel_atual") or "").upper() == "CONCLUIDOS":
-            rows.append(old)
-            rows_to_save.append(old)
-            preserved_count += 1
-            continue
-        if not old:
-            new_count += 1
-        elif _row_signature(row) != _row_signature(old):
-            changed_count += 1
-        rows.append(row)
-        rows_to_save.append(row)
+    rows, rows_to_save, recalculated_ids, counts = _merge_incremental_rows(existing, recalculated_rows, True)
 
     _emit_progress(progress_callback, 95, 100, "Salvando resultado atualizado...")
     repository.replace_cross_subset(rows_to_save, usuario, recalculated_ids)
@@ -2441,13 +2378,13 @@ def atualizar_cruzamento_incremental_placas(
     result = pd.DataFrame(rows)
     summary_base = pd.DataFrame(recalculated_rows)
     summary = {
-        "registros_novos": int(new_count),
-        "registros_atualizados": int(changed_count),
+        "registros_novos": counts["registros_novos"],
+        "registros_atualizados": counts["registros_atualizados"],
         "viagens_control": int(summary_base.get("encontrou_control", pd.Series(dtype=int)).fillna(0).astype(int).eq(1).sum()) if not summary_base.empty else 0,
         "viagens_rastreador": int(summary_base.get("encontrou_rastreador", pd.Series(dtype=int)).fillna(0).astype(int).eq(1).sum()) if not summary_base.empty else 0,
         "estadias_identificadas": int(summary_base.get("painel_atual", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ESTADIAS").sum()) if not summary_base.empty else 0,
         "pendencias": int(summary_base.get("painel_atual", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("VERIFICACAO").sum()) if not summary_base.empty else 0,
-        "concluidos_preservados": int(preserved_count),
+        "concluidos_preservados": counts["concluidos_preservados"],
         "erros": int(summary_base.get("status_cruzamento", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq("ERRO").sum()) if not summary_base.empty else 0,
         "placas_processadas": len(normalized_plates),
     }

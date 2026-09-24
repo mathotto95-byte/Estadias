@@ -32,6 +32,7 @@ from src.modules.estadias.repository import (
     read_preferencia_colunas,
     read_rastreador,
     read_estadia_positions_period,
+    _sample_positions_for_result,
     read_rastreador_period,
     reabrir_conclusao,
     sample,
@@ -319,22 +320,6 @@ def _estadia_pdf_options_frame(specs: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _sample_positions_30_minutes(positions: pd.DataFrame, limit: int = 500) -> pd.DataFrame:
-    if positions.empty:
-        return positions
-    display = positions.copy()
-    display["_data_dt"] = pd.to_datetime(display.get("data_hora"), errors="coerce")
-    display = display[display["_data_dt"].notna()].sort_values("_data_dt")
-    if display.empty:
-        return positions.head(limit).copy()
-    display["_bucket_30min"] = display["_data_dt"].dt.floor("30min")
-    sampled = display.drop_duplicates("_bucket_30min", keep="first")
-    last_row = display.tail(1)
-    if not last_row.empty and last_row.index[0] not in sampled.index:
-        sampled = pd.concat([sampled, last_row], ignore_index=False)
-    return sampled.head(limit).drop(columns=["_data_dt", "_bucket_30min"], errors="ignore")
-
-
 def _format_speed(value: object) -> str:
     numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(numeric):
@@ -427,7 +412,7 @@ def _tracker_positions_pdf(
         if positions.empty:
             elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
             continue
-        display = _sample_positions_30_minutes(positions, 250)
+        display = _sample_positions_for_result(positions, 250)
         data = [["Placa", "Data e hora (intervalo 30 min)", "Municipio", "Velocidade"]]
         for _, point in display.iterrows():
             data.append(

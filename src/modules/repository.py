@@ -6,7 +6,6 @@ from typing import Any
 import pandas as pd
 
 from src.database.connection import get_connection, read_sql
-from src.database.migrations import MODULAR_COPY_MAP
 from src.utils.timezone import brasilia_now_iso
 
 
@@ -38,21 +37,6 @@ def table_count(table: str) -> int:
             return int(row[0] or 0) if row else 0
     except Exception:
         return 0
-
-
-def preferred_table(modular_table: str, legacy_table: str = "") -> tuple[str, bool]:
-    if table_count(modular_table) > 0:
-        return modular_table, False
-    if legacy_table and table_count(legacy_table) > 0:
-        return legacy_table, True
-    return modular_table, False
-
-
-def read_preferred_table(modular_table: str, legacy_table: str = "", limit: int = 500) -> tuple[pd.DataFrame, bool, str]:
-    table, using_fallback = preferred_table(modular_table, legacy_table)
-    if not table_exists(table):
-        return pd.DataFrame(), using_fallback, table
-    return read_sql(f"select * from {table} limit ?", (limit,)), using_fallback, table
 
 
 def insert_system_log(
@@ -90,19 +74,3 @@ def latest_import_logs(table: str, limit: int = 10) -> pd.DataFrame:
         """,
         (limit,),
     )
-
-
-def modular_counts() -> pd.DataFrame:
-    rows = []
-    for legacy_table, modular_table in MODULAR_COPY_MAP.items():
-        rows.append(
-            {
-                "Tabela origem": legacy_table,
-                "Tabela modular": modular_table,
-                "Linhas origem": table_count(legacy_table),
-                "Linhas modular": table_count(modular_table),
-                "Usando fallback": "SIM" if table_count(modular_table) == 0 and table_count(legacy_table) > 0 else "NAO",
-            }
-        )
-    return pd.DataFrame(rows)
-
