@@ -21,9 +21,17 @@ GITHUB_BACKUP_PATH = "backups/estadias_latest.json"
 GITHUB_IMPORTS_BACKUP_PATH = "backups/estadias_importacoes_latest.json"
 
 [users]
-admin = "admin"
-matheus = "123456"
+admin = "sha256:<hash_da_senha>"
+matheus = "sha256:<hash_da_senha>"
 ```
+
+Sem a secao `[users]` o login fica bloqueado. Para gerar o hash de uma senha:
+
+```bash
+python -c "import hashlib; print('sha256:' + hashlib.sha256('SUA_SENHA'.encode()).hexdigest())"
+```
+
+Senhas em texto puro ainda funcionam, mas nao sao recomendadas. Para desenvolvimento local, `ALLOW_DEFAULT_ADMIN=SIM` (variavel de ambiente ou secret) libera `admin / admin` quando nao ha usuarios configurados.
 
 O token do GitHub precisa ter acesso ao repositorio `mathotto95-byte/Estadias` e permissao `Contents: Read and write`.
 

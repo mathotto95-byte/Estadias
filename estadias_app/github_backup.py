@@ -73,6 +73,12 @@ IMPORT_BACKUP_TABLES = [
 
 # Os dois arquivos fixos substituem o historico de snapshots avulsos.
 HISTORY_RETENTION_KEEP = 0
+BACKUP_DIR = "backups"
+HISTORY_DIR = f"{BACKUP_DIR}/history"
+DEFAULT_LATEST_PATH = f"{BACKUP_DIR}/estadias_latest.json"
+DEFAULT_PREVIOUS_PATH = f"{BACKUP_DIR}/estadias_previous.json"
+DEFAULT_IMPORTS_PATH = f"{BACKUP_DIR}/estadias_importacoes_latest.json"
+DEFAULT_HEALTHCHECK_PATH = f"{BACKUP_DIR}/_healthcheck.json"
 _backup_lock = threading.Lock()
 
 SECRET_ALIASES = {
@@ -143,10 +149,10 @@ def github_settings() -> dict[str, Any]:
         "token": _sanitize_token(_read_secret("GITHUB_TOKEN")),
         "repository": _read_secret("GITHUB_REPOSITORY", "mathotto95-byte/Estadias"),
         "branch": _read_secret("GITHUB_BRANCH", "main"),
-        "latest_path": _read_secret("GITHUB_BACKUP_PATH", "backups/estadias_latest.json"),
-        "previous_path": "backups/estadias_previous.json",
-        "imports_path": _read_secret("GITHUB_IMPORTS_BACKUP_PATH", "backups/estadias_importacoes_latest.json"),
-        "healthcheck_path": _read_secret("GITHUB_HEALTHCHECK_PATH", "backups/_healthcheck.json"),
+        "latest_path": _read_secret("GITHUB_BACKUP_PATH", DEFAULT_LATEST_PATH),
+        "previous_path": DEFAULT_PREVIOUS_PATH,
+        "imports_path": _read_secret("GITHUB_IMPORTS_BACKUP_PATH", DEFAULT_IMPORTS_PATH),
+        "healthcheck_path": _read_secret("GITHUB_HEALTHCHECK_PATH", DEFAULT_HEALTHCHECK_PATH),
         "auto_backup": _yes(_read_secret("GITHUB_AUTO_BACKUP", "SIM"), True),
     }
 
@@ -284,7 +290,7 @@ def prune_history(keep: int = HISTORY_RETENTION_KEEP) -> dict[str, Any]:
 
 
 def _prune_legacy_history(settings: dict[str, Any], keep: int = 0) -> dict[str, Any]:
-    entries = _list_directory(settings, "backups/history")
+    entries = _list_directory(settings, HISTORY_DIR)
     files = sorted((item for item in entries if item.get("type") == "file"), key=lambda item: str(item.get("name") or ""))
     excess = files[: max(len(files) - max(int(keep), 0), 0)]
     removed = 0

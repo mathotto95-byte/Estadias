@@ -8,7 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 import streamlit as st
 
-from estadias_app.auth import authenticate, using_default_admin
+from estadias_app.auth import authenticate, login_not_configured, using_default_admin
 from estadias_app.github_backup import (
     BACKUP_TABLES,
     all_database_tables,
@@ -31,9 +31,8 @@ from estadias_app.github_backup import (
     test_github_connection,
 )
 from src.config.settings import ROOT_DIR, ensure_directories
-from src.database.connection import database_status
+from src.database.connection import database_status, get_connection
 from src.database.migrations import create_modular_tables
-from src.database.connection import get_connection
 from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_config_page,
@@ -99,6 +98,9 @@ def _require_login() -> str:
     with center:
         with st.container(border=True):
             render_login_header("Estadias", "Acesso restrito")
+            if login_not_configured():
+                st.error("Login nao configurado. Defina a secao [users] nos Secrets do Streamlit (senha em texto ou no formato sha256:<hash>).")
+                st.stop()
             if using_default_admin():
                 st.warning("Usuario inicial ativo: admin / admin. Configure usuarios nos Secrets antes de liberar para a equipe.")
             with st.form("login_form"):

@@ -1269,7 +1269,7 @@ def _render_conclusion_form(panel: str, df: pd.DataFrame, usuario: str) -> None:
                 "precisa_verificar": precisa_verificar,
                 "status_retorno": status_retorno,
             }
-            save_conclusao(lcte_id, payload, usuario, painel)
+            save_conclusao(lcte_id, payload, usuario, panel)
             st.success("Conclusao salva. A viagem foi movida para o Banco de Dados - Concluidos.")
             st.rerun()
 
