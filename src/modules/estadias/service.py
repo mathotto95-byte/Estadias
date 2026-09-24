@@ -1687,7 +1687,7 @@ def _km_percorrido(df: pd.DataFrame) -> float:
 
 def _params_for_trip(trip: pd.Series, parametros: pd.DataFrame, config: dict[str, str]) -> dict[str, float]:
     default_hours = _config_number(config, "franquia_padrao_horas", 24)
-    result = {"franquia_carga_horas": default_hours, "franquia_descarga_horas": default_hours, "valor_hora": _config_number(config, "valor_hora_estadia", 0)}
+    result = {"franquia_carga_horas": default_hours, "franquia_descarga_horas": default_hours, "valor_hora": _config_number(config, "valor_hora_estadia", 68.40)}
     if parametros.empty:
         return result
     cliente = normalize_text(trip.get("cliente"))

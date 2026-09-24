@@ -694,7 +694,12 @@ def placas_disponiveis() -> pd.DataFrame:
 
 @st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def read_cross(limit: int = 1000) -> pd.DataFrame:
-    return read_filtered(CROSS_TABLE, {}, limit)
+    rows = read_filtered(CROSS_TABLE, {}, limit)
+    if not rows.empty and "horas_estadia" in rows:
+        hours = pd.to_numeric(rows["horas_estadia"], errors="coerce").fillna(0)
+        values = pd.to_numeric(rows.get("valor_estimado_estadia", pd.Series(0, index=rows.index)), errors="coerce")
+        rows["valor_estimado_estadia"] = values.where(values.fillna(0).ne(0), (hours * 68.40).round(2))
+    return rows
 
 
 def replace_cross(rows: list[dict[str, Any]], usuario: str) -> int:
