@@ -1,6 +1,6 @@
 __pycache__/
 *.py[cod]
-.streamlit/
+.streamlit/secrets.toml
 .pytest_cache/
 data/database/*.sqlite3
 data/database/*.sqlite3-*

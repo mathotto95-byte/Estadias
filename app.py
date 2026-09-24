@@ -30,7 +30,7 @@ from estadias_app.github_backup import (
     table_counts,
     test_github_connection,
 )
-from src.config.settings import ensure_directories
+from src.config.settings import ROOT_DIR, ensure_directories
 from src.database.connection import database_status
 from src.database.migrations import create_modular_tables
 from src.database.connection import get_connection
@@ -48,6 +48,7 @@ from src.modules.estadias.page import (
 )
 from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now, brasilia_now_iso
+from src.utils.rw_theme import apply_theme, render_brand_header, render_login_header, render_sidebar_logo
 
 
 MENU = [
@@ -83,59 +84,13 @@ def _clear_large_session_exports() -> None:
 
 
 def _apply_theme() -> None:
-    st.markdown(
-        """
-        <style>
-        :root {
-            --rw-bg: #030914;
-            --rw-panel: #071526;
-            --rw-navy: #020d3f;
-            --rw-gold: #d4af37;
-            --rw-border: rgba(212, 175, 55, 0.32);
-            --rw-text: #f8fafc;
-            --rw-muted: rgba(248, 250, 252, 0.72);
-        }
-        .stApp {background: var(--rw-bg) !important; color: var(--rw-text) !important;}
-        .block-container {padding: 1.1rem clamp(0.75rem, 2vw, 2rem) 2rem; max-width: none; width: 100%;}
-        h1, h2, h3, label, p, span, div {color: var(--rw-text);}
-        [data-testid="stCaptionContainer"] p {color: var(--rw-muted) !important;}
-        [data-testid="stSidebar"] {background: var(--rw-navy) !important; border-right: 1px solid var(--rw-border);}
-        [data-testid="stSidebar"] * {color: var(--rw-text) !important;}
-        div[data-testid="stMetric"] {background: var(--rw-navy); border: 1px solid var(--rw-border); border-radius: 8px; padding: 12px 14px;}
-        div[data-testid="stMetric"] * {color: var(--rw-text) !important;}
-        div[data-testid="stExpander"], div[data-testid="stVerticalBlockBorderWrapper"] {
-            background: rgba(7, 21, 38, 0.72);
-            border: 1px solid var(--rw-border);
-            border-radius: 8px;
-        }
-        div[data-testid="stDataFrame"] {border: 1px solid var(--rw-border); border-radius: 8px; min-width: 0;}
-        .stButton > button, .stDownloadButton > button {
-            background: var(--rw-panel);
-            border: 1px solid var(--rw-gold);
-            border-radius: 8px;
-            color: var(--rw-text) !important;
-            font-weight: 800;
-        }
-        .stButton > button:hover, .stDownloadButton > button:hover,
-        .stButton > button[kind="primary"] {
-            background: var(--rw-gold);
-            color: var(--rw-bg) !important;
-            border-color: var(--rw-gold);
-        }
-        [data-baseweb="input"], [data-baseweb="select"] > div {
-            background: var(--rw-panel) !important;
-            border-color: var(--rw-border) !important;
-        }
-        [data-baseweb="input"] input, [data-baseweb="select"] div {color: var(--rw-text) !important;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    apply_theme(ROOT_DIR / "assets" / "rodo_wall_logo.png")
 
 
 def _require_login() -> str:
     if st.session_state.get("authenticated") and st.session_state.get("username"):
         username = str(st.session_state["username"])
+        render_sidebar_logo()
         st.sidebar.subheader("Usuario")
         st.sidebar.success(username)
         if st.sidebar.button("Sair", use_container_width=True):
@@ -144,20 +99,22 @@ def _require_login() -> str:
             st.rerun()
         return username
 
-    st.title("Estadias")
-    st.caption("Acesso restrito")
-    if using_default_admin():
-        st.warning("Usuario inicial ativo: admin / admin. Configure usuarios nos Secrets antes de liberar para a equipe.")
-    with st.form("login_form"):
-        username = st.text_input("Usuario")
-        password = st.text_input("Senha", type="password")
-        submitted = st.form_submit_button("Entrar", type="primary", use_container_width=True)
-    if submitted:
-        if authenticate(username, password):
-            st.session_state["authenticated"] = True
-            st.session_state["username"] = str(username).strip()
-            st.rerun()
-        st.error("Usuario ou senha invalidos.")
+    _, center, _ = st.columns([1, 1.3, 1])
+    with center:
+        with st.container(border=True):
+            render_login_header("Estadias", "Acesso restrito")
+            if using_default_admin():
+                st.warning("Usuario inicial ativo: admin / admin. Configure usuarios nos Secrets antes de liberar para a equipe.")
+            with st.form("login_form"):
+                username = st.text_input("Usuario")
+                password = st.text_input("Senha", type="password")
+                submitted = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+            if submitted:
+                if authenticate(username, password):
+                    st.session_state["authenticated"] = True
+                    st.session_state["username"] = str(username).strip()
+                    st.rerun()
+                st.error("Usuario ou senha invalidos.")
     st.stop()
 
 
@@ -489,8 +446,7 @@ def main() -> None:
     initialize_database()
     _restore_from_github_once()
     _render_github_sidebar()
-    st.title("Estadias")
-    st.caption("Sistema independente com banco proprio e backup direto no GitHub.")
+    render_brand_header("Estadias", "Sistema independente com banco proprio e backup direto no GitHub.")
     _render_status()
     page = st.sidebar.radio("Menu", MENU, key="main_menu")
     st.divider()
