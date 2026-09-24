@@ -158,7 +158,7 @@ LCTE_ALIASES = {
     "longitude_origem": ["longitude origem", "lng origem", "long origem", "lon origem", "lng carga"],
     "latitude_destino": ["latitude destino", "lat destino", "lat descarga"],
     "longitude_destino": ["longitude destino", "lng destino", "long destino", "lon destino", "lng descarga"],
-    "observacao": ["observacao", "obs", "comentario"],
+    "observacao": ["observacao", "observação", "obs", "comentario", "comentário"],
 }
 
 RASTREADOR_ALIASES = {
@@ -364,6 +364,13 @@ def _document_list(value: Any) -> list[str]:
 
 def _document_list_text(value: Any) -> str:
     return "/".join(_document_list(value))
+
+
+def _lcte_observation(value: Any) -> str:
+    value = _clean_value(value)
+    if value in [None, ""]:
+        return ""
+    return str(value)[7:].strip()
 
 
 def _compact_location(value: Any, uf: Any = "") -> str:
@@ -590,7 +597,7 @@ def normalize_lcte_row(row: dict[str, Any], columns: dict[str, str], base: dict[
         "longitude_origem": normalizar_valor_monetario(row_value(row, columns.get("longitude_origem", ""))),
         "latitude_destino": normalizar_valor_monetario(row_value(row, columns.get("latitude_destino", ""))),
         "longitude_destino": normalizar_valor_monetario(row_value(row, columns.get("longitude_destino", ""))),
-        "observacao": str(row_value(row, columns.get("observacao", "")) or ""),
+        "observacao": _lcte_observation(row_value(row, columns.get("observacao", ""))),
     }
     payload["chave_viagem"] = _make_trip_key(payload, sequence)
     return payload
