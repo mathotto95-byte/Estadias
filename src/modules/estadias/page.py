@@ -11,7 +11,7 @@ import streamlit as st
 
 from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
-from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_lcte_ipiranga, import_rastreador_files
+from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_lcte_ipiranga, import_rastreador_files, validate_pgadmin_rastreador_csv
 from src.modules.estadias.repository import (
     CONTROL_NORMALIZED_TABLE,
     CROSS_TABLE,
@@ -658,6 +658,7 @@ def render_imports_page(usuario: str, role: str) -> None:
 
     with st.expander("Importar Relatorios Rastreador por Placa", expanded=True):
         st.session_state.setdefault("estadias_rastreador_upload_version", 0)
+        st.session_state.setdefault("estadias_pgadmin_upload_version", 0)
         tracker_files = st.file_uploader(
             "Relatorios do rastreador",
             type=["xlsx", "xls", "csv"],
@@ -678,13 +679,30 @@ def render_imports_page(usuario: str, role: str) -> None:
             if len(tracker_files) > 20:
                 st.warning("Para evitar queda por memoria/tempo, o sistema vai processar em lotes e liberar os arquivos da tela ao terminar.")
             render_dataframe(preview, height=260, max_rows=120)
+        pgadmin_files = st.file_uploader(
+            "CSV do rastreador exportado pelo pgAdmin",
+            type=["csv"],
+            accept_multiple_files=True,
+            key=f"estadias_pgadmin_upload_{int(st.session_state['estadias_pgadmin_upload_version'])}",
+        )
         tracker_mode = _duplicate_mode(role, "estadias_rastreador_duplicate_mode")
         process_and_clean = st.checkbox(
             "Calcular estadias apos importar e limpar rastreador bruto",
             value=True,
             help="Mantem no banco apenas o resultado do cruzamento e as posicoes resumidas das estadias para PDF. As posicoes importadas do rastreador sao removidas ao final.",
         )
-        if st.button("Importar relatorios do rastreador", type="primary", use_container_width=True, disabled=not tracker_files):
+        col_xls, col_pgadmin = st.columns(2)
+        import_standard = col_xls.button("Importar relatorios do rastreador", type="primary", use_container_width=True, disabled=not tracker_files)
+        import_pgadmin = col_pgadmin.button("Importar CSV pgAdmin", use_container_width=True, disabled=not pgadmin_files)
+        if import_standard or import_pgadmin:
+            selected_files = list(pgadmin_files if import_pgadmin else tracker_files)
+            if import_pgadmin:
+                try:
+                    for file in selected_files:
+                        validate_pgadmin_rastreador_csv(file.getvalue())
+                except (ValueError, UnicodeError) as exc:
+                    st.error(str(exc))
+                    return
             progress = st.progress(0)
             status_text = st.empty()
 
@@ -693,7 +711,7 @@ def render_imports_page(usuario: str, role: str) -> None:
                 progress.progress(max(0, min(100, pct)))
                 status_text.info(f"Importando {current}/{total}: {file_name}")
 
-            result = import_rastreador_files(list(tracker_files or []), usuario, tracker_mode, update_progress)
+            result = import_rastreador_files(selected_files, usuario, tracker_mode, update_progress)
             if process_and_clean and int(result.get("arquivos_sucesso") or 0) > 0:
                 imported_plates = list(result.get("placas_importadas") or [])
 
@@ -721,6 +739,7 @@ def render_imports_page(usuario: str, role: str) -> None:
             st.session_state["skip_next_auto_backup"] = True
             st.session_state["estadias_last_tracker_import_result"] = result
             st.session_state["estadias_rastreador_upload_version"] = int(st.session_state.get("estadias_rastreador_upload_version", 0)) + 1
+            st.session_state["estadias_pgadmin_upload_version"] = int(st.session_state.get("estadias_pgadmin_upload_version", 0)) + 1
             st.rerun()
         last_tracker_result = st.session_state.get("estadias_last_tracker_import_result")
         if isinstance(last_tracker_result, dict):

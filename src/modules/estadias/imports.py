@@ -262,6 +262,24 @@ def read_tabular_file(file_name: str, content: bytes) -> tuple[pd.DataFrame, str
     return df.dropna(how="all").reset_index(drop=True), sheet_name
 
 
+def validate_pgadmin_rastreador_csv(content: bytes) -> None:
+    try:
+        sample = pd.read_csv(BytesIO(content), dtype=object, nrows=5)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
+        raise ValueError("CSV pgAdmin vazio, malformado ou fora de UTF-8.") from exc
+    columns = column_map(sample, RASTREADOR_ALIASES)
+    required = ("placa", "data_hora", "cidade", "cliente_referencia", "referencia", "latitude", "longitude")
+    missing = [field for field in required if not columns.get(field)]
+    if missing:
+        raise ValueError(f"CSV pgAdmin invalido. Colunas ausentes: {', '.join(missing)}")
+    if sample.empty or not any(
+        normalizar_placa(row[columns["placa"]])
+        and normalizar_data_hora(data_hora_value=row[columns["data_hora"]])
+        for _, row in sample.iterrows()
+    ):
+        raise ValueError("CSV pgAdmin sem placa e data/hora validas nas primeiras linhas.")
+
+
 def _clean_value(value: Any) -> Any:
     if value is None:
         return ""
