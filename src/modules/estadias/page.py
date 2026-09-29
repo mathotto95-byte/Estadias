@@ -336,7 +336,7 @@ def _safe_pdf_filename(spec: dict[str, object], index: int) -> str:
 
 
 def _tracker_positions_pdf(
-    df: pd.DataFrame,
+    df: pd.DataFrame | None = None,
     selected_indexes: list[int] | None = None,
     specs_override: list[dict[str, object]] | None = None,
 ) -> bytes:
@@ -369,7 +369,7 @@ def _tracker_positions_pdf(
         )
     )
     elements: list[object] = [header, Spacer(1, 0.35 * cm)]
-    specs = list(specs_override) if specs_override is not None else _estadia_period_specs(df)
+    specs = list(specs_override) if specs_override is not None else _estadia_period_specs(df if df is not None else pd.DataFrame())
     if selected_indexes is not None and specs_override is None:
         selected_set = {int(index) for index in selected_indexes if 0 <= int(index) < len(specs)}
         specs = [spec for index, spec in enumerate(specs) if index in selected_set]
@@ -403,7 +403,7 @@ def _tracker_positions_pdf(
         if positions.empty:
             elements.append(Paragraph("Nenhuma posicao do rastreador encontrada para este periodo.", styles["Normal"]))
             continue
-        display = _sample_positions_for_result(positions, 250)
+        display = positions.head(250) if "fonte" in positions and positions["fonte"].eq("RASTREADOR_RESUMIDO_30_MIN").all() else _sample_positions_for_result(positions, 250)
         data = [["Placa", "Data e hora (intervalo 30 min)", "Municipio", "Velocidade"]]
         for _, point in display.iterrows():
             data.append(
@@ -444,15 +444,14 @@ def _tracker_positions_pdf(
     return output.getvalue()
 
 
-def _tracker_positions_pdf_zip(df: pd.DataFrame, selected_indexes: list[int]) -> bytes:
-    specs = _estadia_period_specs(df)
+def _tracker_positions_pdf_zip(specs: list[dict[str, object]], selected_indexes: list[int]) -> bytes:
     output = BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for index in selected_indexes:
             if index < 0 or index >= len(specs):
                 continue
             filename = _safe_pdf_filename(specs[index], index)
-            archive.writestr(filename, _tracker_positions_pdf(df, specs_override=[specs[index]]))
+            archive.writestr(filename, _tracker_positions_pdf(specs_override=[specs[index]]))
     return output.getvalue()
 
 
@@ -2125,12 +2124,12 @@ def render_cross_page(usuario: str) -> None:
                 with st.spinner("Preparando arquivo de posicoes..."):
                     try:
                         if multiple_pdfs:
-                            download_bytes = _tracker_positions_pdf_zip(pdf_base, pdf_selected)
+                            download_bytes = _tracker_positions_pdf_zip(pdf_specs, pdf_selected)
                             download_name = f"relatorios_posicoes_rastreador_{download_stamp}.zip"
                             mime_type = "application/zip"
                             button_label = "Baixar PDFs selecionados"
                         else:
-                            download_bytes = _tracker_positions_pdf(pdf_base, pdf_selected)
+                            download_bytes = _tracker_positions_pdf(specs_override=[pdf_specs[pdf_selected[0]]])
                             download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
                             mime_type = "application/pdf"
                             button_label = "Baixar PDF selecionado"
