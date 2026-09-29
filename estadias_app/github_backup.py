@@ -8,6 +8,7 @@ import json
 import os
 import threading
 import time
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -34,7 +35,7 @@ from src.modules.estadias.repository import (
     RASTREADOR_ORIGINAL_TABLE,
     STATUS_LOG_TABLE,
 )
-from src.utils.timezone import brasilia_now_iso
+from src.utils.timezone import brasilia_now, brasilia_now_iso
 
 
 ESTADIAS_TABLES = [
@@ -77,6 +78,8 @@ IMPORT_BACKUP_TABLES = [
 HISTORY_RETENTION_KEEP = 0
 _backup_lock = threading.Lock()
 _analysis_backup_lock = threading.Lock()
+_analysis_scheduler_lock = threading.Lock()
+_analysis_scheduler: threading.Thread | None = None
 
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
@@ -447,6 +450,31 @@ def backup_analysis_marks_to_github() -> dict[str, Any]:
             return {"status": "ERRO", "message": _github_http_error_message(exc)}
         except Exception as exc:
             return {"status": "ERRO", "message": str(exc)}
+
+
+def _seconds_until_analysis_backup(now: datetime, last_run: date | None) -> float:
+    today_at_19 = now.replace(hour=19, minute=0, second=0, microsecond=0)
+    if now >= today_at_19 and last_run != now.date():
+        return 0.0
+    target = today_at_19 if now < today_at_19 else today_at_19 + timedelta(days=1)
+    return max(0.0, (target - now).total_seconds())
+
+
+def start_analysis_backup_scheduler() -> None:
+    global _analysis_scheduler
+    with _analysis_scheduler_lock:
+        if _analysis_scheduler and _analysis_scheduler.is_alive():
+            return
+
+        def run() -> None:
+            last_run: date | None = None
+            while True:
+                time.sleep(_seconds_until_analysis_backup(brasilia_now(), last_run))
+                last_run = brasilia_now().date()
+                backup_analysis_marks_to_github()
+
+        _analysis_scheduler = threading.Thread(target=run, daemon=True, name="estadias-analises-backup-19h")
+        _analysis_scheduler.start()
 
 
 def import_backup_json_bytes() -> bytes:

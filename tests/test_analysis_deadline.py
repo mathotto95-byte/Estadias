@@ -43,6 +43,13 @@ class AnalysisDeadlineTest(unittest.TestCase):
         self.assertEqual(upload.call_args.args[1], "backups/estadias_analises.csv")
         self.assertEqual(upload.call_args.args[2].decode("utf-8-sig"), "Nota fiscal,Enviada em,Respondida em\r\n12345,2026-09-29T10:00:00,\r\n")
 
+    def test_analysis_backup_runs_at_19_brasilia_time(self):
+        before = datetime(2026, 9, 29, 18, 30)
+        after = datetime(2026, 9, 29, 19, 1)
+        self.assertEqual(github_backup._seconds_until_analysis_backup(before, None), 1800)
+        self.assertEqual(github_backup._seconds_until_analysis_backup(after, None), 0)
+        self.assertGreater(github_backup._seconds_until_analysis_backup(after, after.date()), 23 * 3600)
+
 
 if __name__ == "__main__":
     unittest.main()

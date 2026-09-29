@@ -14,6 +14,7 @@ from estadias_app.github_backup import (
     all_database_tables,
     backup_json_bytes,
     backup_to_github,
+    start_analysis_backup_scheduler,
     data_signature,
     github_auto_backup_enabled,
     github_backup_configured,
@@ -441,6 +442,7 @@ def main() -> None:
     username = _require_login()
     initialize_database()
     _restore_from_github_once()
+    start_analysis_backup_scheduler()
     _render_github_sidebar()
     render_brand_header("Estadias", "Sistema independente com banco proprio e backup direto no GitHub.")
     _render_status()

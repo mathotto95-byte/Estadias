@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from estadias_app.github_backup import backup_analysis_marks_to_github, backup_to_github
+from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
 from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_lcte_ipiranga, import_rastreador_files, validate_pgadmin_rastreador_csv
 from src.modules.estadias.repository import (
@@ -1984,12 +1984,9 @@ def render_performance_rw_page() -> None:
 
 
 def render_cross_page(usuario: str) -> None:
-    analysis_backup_result = st.session_state.pop("last_analysis_backup_result", None)
-    if analysis_backup_result:
-        if analysis_backup_result["status"] == "SUCESSO":
-            st.success(f"Marcacoes salvas. Backup separado: {analysis_backup_result['message']}")
-        else:
-            st.warning(f"Marcacoes salvas no banco, mas o backup separado falhou: {analysis_backup_result['message']}")
+    saved_count = st.session_state.pop("analysis_saved_count", 0)
+    if saved_count:
+        st.success(f"{saved_count} viagem(ns) atualizada(s). Backup separado agendado para 19h.")
     col_title, col_plate, col_update = st.columns([2.2, 1.2, 1])
     col_title.subheader("Viagens")
     lcte_count = table_count(LCTE_NORMALIZED_TABLE)
@@ -2195,7 +2192,8 @@ def render_cross_page(usuario: str) -> None:
         else:
             for lcte_id, (sent, replied) in updates.items():
                 save_analysis_flags(lcte_id, sent, replied, usuario)
-            st.session_state["last_analysis_backup_result"] = backup_analysis_marks_to_github()
+            st.session_state["analysis_saved_count"] = len(updates)
+            st.session_state["skip_next_auto_backup"] = True
             st.rerun()
     _render_quick_conclusion(filtered, usuario)
     _render_summary_detail(filtered, cross)
