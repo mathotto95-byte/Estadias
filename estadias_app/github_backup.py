@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
+import io
 import json
 import os
 import threading
@@ -74,6 +76,7 @@ IMPORT_BACKUP_TABLES = [
 # Os dois arquivos fixos substituem o historico de snapshots avulsos.
 HISTORY_RETENTION_KEEP = 0
 _backup_lock = threading.Lock()
+_analysis_backup_lock = threading.Lock()
 
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
@@ -415,6 +418,35 @@ def import_backup_payload() -> dict[str, Any]:
 
 def backup_json_bytes() -> bytes:
     return json.dumps(backup_payload(), ensure_ascii=False, indent=2, default=str).encode("utf-8")
+
+
+def backup_analysis_marks_to_github() -> dict[str, Any]:
+    if not github_backup_configured():
+        return {"status": "NAO_CONFIGURADO", "message": "Backup GitHub nao configurado."}
+    with _analysis_backup_lock:
+        try:
+            rows = read_sql(
+                f"select nf, analise_enviada_em, analise_respondida_em from {CROSS_TABLE} "
+                "where coalesce(analise_enviada_em, '') <> '' or coalesce(analise_respondida_em, '') <> '' "
+                "order by nf, analise_enviada_em"
+            )
+            if rows.empty:
+                return {"status": "IGNORADO_BASE_VAZIA", "message": "Nenhuma marcacao encontrada; backup anterior preservado."}
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["Nota fiscal", "Enviada em", "Respondida em"])
+            writer.writerows(rows.fillna("").itertuples(index=False, name=None))
+            _upload_bytes(
+                github_settings(),
+                "backups/estadias_analises.csv",
+                output.getvalue().encode("utf-8-sig"),
+                "Backup das marcacoes de analise Estadias",
+            )
+            return {"status": "SUCESSO", "message": f"{len(rows)} marcacao(oes) salvas no GitHub."}
+        except HTTPError as exc:
+            return {"status": "ERRO", "message": _github_http_error_message(exc)}
+        except Exception as exc:
+            return {"status": "ERRO", "message": str(exc)}
 
 
 def import_backup_json_bytes() -> bytes:

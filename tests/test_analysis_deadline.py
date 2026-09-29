@@ -5,12 +5,15 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
+import pandas as pd
+
 streamlit = types.ModuleType("streamlit")
 streamlit.cache_data = lambda **kwargs: lambda func: func
 sys.modules.setdefault("streamlit", streamlit)
 
 from src.modules.estadias import repository
 from src.modules.estadias.page import _analysis_deadline_status
+from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
@@ -31,6 +34,14 @@ class AnalysisDeadlineTest(unittest.TestCase):
                 stored = conn.execute(f"select analise_enviada_em, analise_respondida_em from {repository.CROSS_TABLE}").fetchone()
         self.assertEqual(stored[0], sent)
         self.assertTrue(stored[1])
+
+    def test_separate_backup_contains_only_invoice_and_mark_dates(self):
+        rows = pd.DataFrame([{"nf": "12345", "analise_enviada_em": "2026-09-29T10:00:00", "analise_respondida_em": ""}])
+        with patch.object(github_backup, "github_backup_configured", return_value=True), patch.object(github_backup, "read_sql", return_value=rows), patch.object(github_backup, "github_settings", return_value={}), patch.object(github_backup, "_upload_bytes") as upload:
+            result = github_backup.backup_analysis_marks_to_github()
+        self.assertEqual(result["status"], "SUCESSO")
+        self.assertEqual(upload.call_args.args[1], "backups/estadias_analises.csv")
+        self.assertEqual(upload.call_args.args[2].decode("utf-8-sig"), "Nota fiscal,Enviada em,Respondida em\r\n12345,2026-09-29T10:00:00,\r\n")
 
 
 if __name__ == "__main__":
