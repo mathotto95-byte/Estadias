@@ -2113,7 +2113,7 @@ def render_cross_page(usuario: str) -> None:
             )
             if len(pdf_selected) > MAX_PDFS_PER_ZIP:
                 st.warning(f"Selecione no maximo {MAX_PDFS_PER_ZIP} estadias por vez para evitar queda da sessao.")
-            col_prepare, col_download = st.columns([1, 1])
+            col_prepare, col_download, col_save_analysis = st.columns(3)
             if col_prepare.button(
                 "Preparar PDF/ZIP",
                 use_container_width=True,
@@ -2148,8 +2148,12 @@ def render_cross_page(usuario: str) -> None:
                         )
             else:
                 col_download.button("Baixar arquivo", use_container_width=True, disabled=True)
+            save_analysis_clicked = col_save_analysis.button(
+                "Salvar marcações de análise", type="primary", use_container_width=True, disabled=table.empty
+            )
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
+        save_analysis_clicked = st.button("Salvar marcações de análise", type="primary", disabled=table.empty)
 
     editable = {"Enviada para análise", "Resposta recebida"}
     editor_table = table.head(500)
@@ -2172,7 +2176,7 @@ def render_cross_page(usuario: str) -> None:
         },
         key=editor_key,
     )
-    if st.button("Salvar marcações de análise", type="primary", disabled=editor_table.empty):
+    if save_analysis_clicked:
         updates = {}
         for index in editor_table.index:
             sent = bool(edited_table.at[index, "Enviada para análise"])
