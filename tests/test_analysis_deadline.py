@@ -55,6 +55,27 @@ class AnalysisDeadlineTest(unittest.TestCase):
         with patch.dict(os.environ, {"GITHUB_BRANCH": "main"}, clear=True):
             self.assertEqual(github_backup.github_settings()["branch"], "backup-data")
 
+    def test_receive_marks_skips_ambiguous_invoices(self):
+        csv_backup = "Nota fiscal,Enviada em,Respondida em\n123,2026-09-29T10:00:00,\n456,2026-09-29T11:00:00,\n"
+        current = pd.DataFrame([
+            {"lcte_id": 1, "nf": "123", "analise_enviada_em": None, "analise_respondida_em": None},
+            {"lcte_id": 2, "nf": "456", "analise_enviada_em": "", "analise_respondida_em": ""},
+            {"lcte_id": 3, "nf": "456", "analise_enviada_em": "", "analise_respondida_em": ""},
+        ])
+        with patch.object(github_backup, "github_backup_configured", return_value=True), patch.object(github_backup, "github_settings", return_value={}), patch.object(github_backup, "_download_text", return_value=csv_backup), patch.object(github_backup, "read_sql", return_value=current), patch.object(github_backup, "restore_analysis_dates", return_value=1) as restore:
+            result = github_backup.restore_analysis_marks_from_github("tester", dry_run=False)
+        self.assertEqual((result["restored"], result["ambiguous"]), (1, 1))
+        restore.assert_called_once_with([(1, "2026-09-29T10:00:00", "")], "tester")
+
+    def test_receive_marks_preserves_existing_date(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute(f"create table {repository.CROSS_TABLE} (lcte_id integer, analise_enviada_em text, analise_respondida_em text, atualizado_em text, atualizado_por text)")
+            conn.execute(f"insert into {repository.CROSS_TABLE} values (1, '2026-09-28T09:00:00', '', '', '')")
+            with patch.object(repository, "get_connection", return_value=conn), patch.object(repository, "_invalidate_read_cache"):
+                repository.restore_analysis_dates([(1, "2026-09-29T10:00:00", "2026-09-30T12:00:00")], "tester")
+                dates = conn.execute(f"select analise_enviada_em, analise_respondida_em from {repository.CROSS_TABLE}").fetchone()
+        self.assertEqual(dates, ("2026-09-28T09:00:00", "2026-09-30T12:00:00"))
+
 
 if __name__ == "__main__":
     unittest.main()

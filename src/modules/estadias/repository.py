@@ -734,6 +734,24 @@ def save_analysis_flags(lcte_id: int, sent: bool, replied: bool, usuario: str) -
     registrar_status_evento(int(lcte_id), usuario, "ATUALIZAR_ANALISE", valor_novo_json=f"enviada={sent}; respondida={replied}")
 
 
+def restore_analysis_dates(updates: list[tuple[int, str, str]], usuario: str) -> int:
+    if not updates:
+        return 0
+    now = brasilia_now_iso()
+    with get_connection() as conn:
+        for lcte_id, sent_at, replied_at in updates:
+            conn.execute(
+                f"""update {CROSS_TABLE}
+                set analise_enviada_em = coalesce(nullif(analise_enviada_em, ''), ?),
+                    analise_respondida_em = case when ? <> '' then coalesce(nullif(analise_respondida_em, ''), ?) else analise_respondida_em end,
+                    atualizado_em = ?, atualizado_por = ?
+                where lcte_id = ?""",
+                (sent_at, replied_at, replied_at, now, usuario, lcte_id),
+            )
+    _invalidate_read_cache()
+    return len(updates)
+
+
 def replace_cross(rows: list[dict[str, Any]], usuario: str) -> int:
     with get_connection() as conn:
         conn.execute(f"delete from {CROSS_TABLE}")

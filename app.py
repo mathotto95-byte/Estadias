@@ -27,6 +27,7 @@ from estadias_app.github_backup import (
     prune_history,
     restore_from_github_if_empty,
     restore_github_version,
+    restore_analysis_marks_from_github,
     restore_json_bytes,
     table_counts,
     test_github_connection,
@@ -284,6 +285,28 @@ def render_backup_page() -> None:
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Falha ao restaurar a copia: {exc}")
+        with st.expander("Receber marcacoes de analise do GitHub"):
+            st.caption("Recupera apenas datas de envio e resposta por nota fiscal. Datas ja preenchidas nao sao substituidas.")
+            if st.button("Verificar backup das marcacoes", use_container_width=True):
+                try:
+                    st.session_state["analysis_restore_preview"] = restore_analysis_marks_from_github()
+                except Exception as exc:
+                    st.error(f"Nao foi possivel receber as marcacoes: {exc}")
+            preview = st.session_state.get("analysis_restore_preview")
+            if preview:
+                st.write({"No backup": preview["backup"], "Prontas para recuperar": preview["ready"], "Sem viagem": preview["missing"], "Ambiguas": preview["ambiguous"], "Invalidas": preview["invalid"], "Ja presentes": preview["already_present"]})
+                confirmation_marks = st.text_input("Digite RESTAURAR ANALISE para confirmar", key="confirm_analysis_restore")
+                if st.button("Aplicar marcacoes", disabled=not preview["ready"] or confirmation_marks.strip().upper() != "RESTAURAR ANALISE", use_container_width=True):
+                    try:
+                        result = restore_analysis_marks_from_github(str(st.session_state.get("username") or ""), dry_run=False)
+                        st.session_state["analysis_restore_result"] = result
+                        st.session_state["skip_next_auto_backup"] = True
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Falha ao recuperar as marcacoes: {exc}")
+            result = st.session_state.pop("analysis_restore_result", None)
+            if result:
+                st.success(f"{result['restored']} marcacao(oes) recuperada(s) do GitHub.")
     counts = table_counts(BACKUP_TABLES)
     import_counts = imported_database_counts()
     total = sum(counts.values())

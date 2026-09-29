@@ -34,6 +34,7 @@ from src.modules.estadias.repository import (
     RASTREADOR_NORMALIZED_TABLE,
     RASTREADOR_ORIGINAL_TABLE,
     STATUS_LOG_TABLE,
+    restore_analysis_dates,
 )
 from src.utils.timezone import brasilia_now, brasilia_now_iso
 
@@ -80,6 +81,7 @@ _backup_lock = threading.Lock()
 _analysis_backup_lock = threading.Lock()
 _analysis_scheduler_lock = threading.Lock()
 _analysis_scheduler: threading.Thread | None = None
+ANALYSIS_BACKUP_PATH = "backups/estadias_analises.csv"
 
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
@@ -441,7 +443,7 @@ def backup_analysis_marks_to_github() -> dict[str, Any]:
             writer.writerows(rows.fillna("").itertuples(index=False, name=None))
             _upload_bytes(
                 github_settings(),
-                "backups/estadias_analises.csv",
+                ANALYSIS_BACKUP_PATH,
                 output.getvalue().encode("utf-8-sig"),
                 "Backup das marcacoes de analise Estadias",
             )
@@ -450,6 +452,73 @@ def backup_analysis_marks_to_github() -> dict[str, Any]:
             return {"status": "ERRO", "message": _github_http_error_message(exc)}
         except Exception as exc:
             return {"status": "ERRO", "message": str(exc)}
+
+
+def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) -> dict[str, Any]:
+    if not github_backup_configured():
+        raise ValueError("Backup GitHub nao configurado.")
+    try:
+        content = _download_text(github_settings(), ANALYSIS_BACKUP_PATH)
+    except HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError("O backup das marcacoes ainda nao existe no GitHub; ele sera criado apos as 19h.") from exc
+        raise
+    reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
+    expected = ["Nota fiscal", "Enviada em", "Respondida em"]
+    if reader.fieldnames != expected:
+        raise ValueError("O backup das marcacoes tem colunas invalidas.")
+
+    backed_up: dict[str, tuple[str, str]] = {}
+    conflicting: set[str] = set()
+    invalid = 0
+    for row in reader:
+        nf = str(row["Nota fiscal"] or "").strip()
+        sent_at = str(row["Enviada em"] or "").strip()
+        replied_at = str(row["Respondida em"] or "").strip()
+        try:
+            if not nf or not sent_at or (replied_at and not sent_at):
+                raise ValueError
+            datetime.fromisoformat(sent_at)
+            if replied_at:
+                datetime.fromisoformat(replied_at)
+        except ValueError:
+            invalid += 1
+            continue
+        dates = (sent_at, replied_at)
+        if nf in backed_up and backed_up[nf] != dates:
+            conflicting.add(nf)
+        backed_up[nf] = dates
+
+    current = read_sql(f"select lcte_id, nf, analise_enviada_em, analise_respondida_em from {CROSS_TABLE}")
+    by_nf: dict[str, list[tuple[int, str, str]]] = {}
+    for row in current.itertuples(index=False):
+        nf = str(row.nf).strip() if pd.notna(row.nf) else ""
+        if nf:
+            sent = str(row.analise_enviada_em) if pd.notna(row.analise_enviada_em) else ""
+            replied = str(row.analise_respondida_em) if pd.notna(row.analise_respondida_em) else ""
+            by_nf.setdefault(nf, []).append((int(row.lcte_id), sent, replied))
+
+    updates: list[tuple[int, str, str]] = []
+    missing = ambiguous = already_present = 0
+    for nf, (sent_at, replied_at) in backed_up.items():
+        if nf in conflicting:
+            continue
+        existing = by_nf.get(nf, [])
+        if not existing:
+            missing += 1
+        elif len({item[0] for item in existing}) != 1:
+            ambiguous += 1
+        elif any(not item[1] or (replied_at and not item[2]) for item in existing):
+            updates.append((existing[0][0], sent_at, replied_at))
+        else:
+            already_present += 1
+
+    restored = restore_analysis_dates(updates, usuario) if not dry_run else 0
+    return {
+        "backup": len(backed_up), "ready": len(updates), "restored": restored,
+        "missing": missing, "ambiguous": ambiguous + len(conflicting),
+        "invalid": invalid, "already_present": already_present,
+    }
 
 
 def _seconds_until_analysis_backup(now: datetime, last_run: date | None) -> float:
