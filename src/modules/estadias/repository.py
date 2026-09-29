@@ -713,6 +713,27 @@ def read_cross(limit: int = 1000) -> pd.DataFrame:
     return rows
 
 
+def save_analysis_flags(lcte_id: int, sent: bool, replied: bool, usuario: str) -> None:
+    if int(lcte_id) <= 0 or (replied and not sent):
+        raise ValueError("Viagem ou marcacao de analise invalida.")
+    now = brasilia_now_iso()
+    with get_connection() as conn:
+        updated = conn.execute(
+            f"""
+            update {CROSS_TABLE}
+            set analise_enviada_em = case when ? then coalesce(nullif(analise_enviada_em, ''), ?) else '' end,
+                analise_respondida_em = case when ? then coalesce(nullif(analise_respondida_em, ''), ?) else '' end,
+                atualizado_em = ?, atualizado_por = ?
+            where lcte_id = ?
+            """,
+            (int(sent), now, int(sent and replied), now, now, usuario, int(lcte_id)),
+        ).rowcount
+    if not updated:
+        raise ValueError("Viagem nao localizada para marcar analise.")
+    _invalidate_read_cache()
+    registrar_status_evento(int(lcte_id), usuario, "ATUALIZAR_ANALISE", valor_novo_json=f"enviada={sent}; respondida={replied}")
+
+
 def replace_cross(rows: list[dict[str, Any]], usuario: str) -> int:
     with get_connection() as conn:
         conn.execute(f"delete from {CROSS_TABLE}")

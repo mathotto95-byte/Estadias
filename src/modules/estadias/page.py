@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import zipfile
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -38,6 +40,7 @@ from src.modules.estadias.repository import (
     reabrir_conclusao,
     sample,
     save_conclusao,
+    save_analysis_flags,
     save_config,
     save_locais,
     save_parametros,
@@ -835,6 +838,12 @@ PANEL_DEFAULT_COLUMNS = {
     "RESUMO": [
         "Status",
         "Estadia",
+        "Enviada para análise",
+        "Enviada em",
+        "Resposta recebida",
+        "Respondida em",
+        "Prazo resposta",
+        "Situação análise",
         "Relatorio CONTROL",
         "Relatorio Rastreador",
         "Notas",
@@ -1463,6 +1472,17 @@ def _status_estadia_from_minutes(tracker_minutes: float | None, estadia_minutes:
     return "PENDENTE", "SEM DADOS"
 
 
+def _analysis_deadline_status(sent_at: object, replied_at: object, now: datetime | None = None) -> tuple[str, str]:
+    if pd.isna(sent_at) or not str(sent_at or "").strip():
+        return "", "Não enviada"
+    try:
+        deadline = datetime.fromisoformat(str(sent_at)) + timedelta(days=15)
+    except ValueError:
+        return "", "Data de envio inválida"
+    status = "Respondida" if not pd.isna(replied_at) and str(replied_at or "").strip() else ("Prazo vencido" if (now or datetime.fromisoformat(brasilia_now_iso())) > deadline else "Aguardando resposta")
+    return deadline.strftime("%d/%m/%Y %H:%M"), status
+
+
 def _line_diff_value(row: pd.Series, tipo: str) -> float | None:
     if tipo == "ORIGEM":
         values = [row.get("diferenca_chegada_origem_min"), row.get("diferenca_saida_origem_min")]
@@ -1572,6 +1592,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
     if cross.empty:
         return pd.DataFrame(columns=columns)
     rows: list[dict[str, object]] = []
+    analysis_now = datetime.fromisoformat(brasilia_now_iso())
     for _, row in cross.iterrows():
         for (
             tipo,
@@ -1636,6 +1657,11 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
             status_estadia, fonte_status_estadia = _status_estadia_from_minutes(tracker_minutes, stay_minutes)
             encontrou_control = _safe_int_value(row.get("encontrou_control"))
             encontrou_rastreador = _safe_int_value(row.get("encontrou_rastreador"))
+            sent_at = row.get("analise_enviada_em")
+            replied_at = row.get("analise_respondida_em")
+            sent_at = "" if pd.isna(sent_at) else sent_at
+            replied_at = "" if pd.isna(replied_at) else replied_at
+            deadline, analysis_status = _analysis_deadline_status(sent_at, replied_at, analysis_now)
             rows.append(
                 {
                     "Status": status,
@@ -1655,6 +1681,12 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Saida Control": _format_datetime_display(row.get(saida_control)),
                     "Tempo Control": _format_hhmm(control_minutes),
                     "Status Estadia": status_estadia,
+                    "Enviada para análise": bool(sent_at),
+                    "Enviada em": _format_datetime_display(sent_at) if sent_at else "",
+                    "Resposta recebida": bool(replied_at),
+                    "Respondida em": _format_datetime_display(replied_at) if replied_at else "",
+                    "Prazo resposta": deadline,
+                    "Situação análise": analysis_status,
                     "Diferenca": f"{int(round(diff_value))} min" if diff_value is not None else "",
                     "Motivo": _line_reason(row, tipo, status, diff_value),
                     "Concluir": "Concluir" if status in {"ESTADIA", "PENDENTE"} else "",
@@ -1724,6 +1756,7 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
         ("Tipo", "tipo"),
         ("Status", "status"),
         ("Status Estadia", "status_estadia"),
+        ("Situação análise", "analise"),
     ]
     for column, key in text_filters:
         value = str(filters.get(key) or "").strip()
@@ -1777,6 +1810,7 @@ def _render_summary_filters(df: pd.DataFrame) -> dict[str, object]:
             "status_estadia": col_i.selectbox("Status Estadia", ["Todos", "ESTADIA", "SEM ESTADIA", "PENDENTE"], key="estadias_resumo_status_estadia"),
         }
     )
+    filters["analise"] = st.selectbox("Análise", ["Todos", "Não enviada", "Aguardando resposta", "Prazo vencido", "Respondida"], key="estadias_resumo_analise")
     return filters
 
 
@@ -2015,6 +2049,7 @@ def render_cross_page(usuario: str) -> None:
         "tipo": st.session_state.get("estadias_resumo_tipo", ""),
         "status": st.session_state.get("estadias_resumo_status", ""),
         "status_estadia": st.session_state.get("estadias_resumo_status_estadia", ""),
+        "analise": st.session_state.get("estadias_resumo_analise", ""),
     }
     filtered_by_fields = _apply_summary_filters(summary, session_filters)
 
@@ -2030,7 +2065,9 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
-    table = filtered[[column for column in visible_columns if column in filtered.columns]] if not filtered.empty else filtered
+    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise"]
+    table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
+    table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
         "Exportar visualizacao",
         dataframe_to_excel({"visualizacao": table}),
@@ -2114,7 +2151,43 @@ def render_cross_page(usuario: str) -> None:
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
 
-    render_dataframe(table, height=620, max_rows=2000)
+    editable = {"Enviada para análise", "Resposta recebida"}
+    editor_table = table.head(500)
+    editor_key = "estadias_analise_editor_" + hashlib.sha1(
+        filtered.loc[editor_table.index, ["lcte_id", "Tipo", "Enviada para análise", "Resposta recebida"]].to_csv(index=False).encode("utf-8")
+    ).hexdigest()[:12]
+    if len(table) > len(editor_table):
+        st.caption(f"Exibindo {len(editor_table)} de {len(table)} linhas para edição. Refine os filtros para localizar outras viagens.")
+    edited_table = st.data_editor(
+        editor_table,
+        hide_index=True,
+        use_container_width=True,
+        height=620,
+        num_rows="fixed",
+        disabled=[column for column in table.columns if column not in editable],
+        column_config={
+            "Enviada para análise": st.column_config.CheckboxColumn("Enviada para análise"),
+            "Resposta recebida": st.column_config.CheckboxColumn("Resposta recebida"),
+            "lcte_id": st.column_config.NumberColumn("ID viagem", disabled=True),
+        },
+        key=editor_key,
+    )
+    if st.button("Salvar marcações de análise", type="primary", disabled=editor_table.empty):
+        updates = {}
+        for index in editor_table.index:
+            sent = bool(edited_table.at[index, "Enviada para análise"])
+            replied = bool(edited_table.at[index, "Resposta recebida"])
+            if sent != bool(editor_table.at[index, "Enviada para análise"]) or replied != bool(editor_table.at[index, "Resposta recebida"]):
+                updates[int(editor_table.at[index, "lcte_id"])] = (sent, replied)
+        if any(replied and not sent for sent, replied in updates.values()):
+            st.error("Marque o envio para análise antes de registrar uma resposta.")
+        elif not updates:
+            st.info("Nenhuma marcação alterada.")
+        else:
+            for lcte_id, (sent, replied) in updates.items():
+                save_analysis_flags(lcte_id, sent, replied, usuario)
+            st.success(f"{len(updates)} viagem(ns) atualizada(s).")
+            st.rerun()
     _render_quick_conclusion(filtered, usuario)
     _render_summary_detail(filtered, cross)
     return
