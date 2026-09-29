@@ -33,6 +33,7 @@ def modular_tables() -> tuple[str, ...]:
         "mod_estadias_posicoes_resultado",
         "mod_estadias_logs_importacao",
         "mod_estadias_cruzamento_inicial",
+        "mod_estadias_analise_manual",
         "mod_estadias_configuracoes",
         "mod_estadias_locais_operacionais",
         "mod_estadias_parametros_cliente",
@@ -917,6 +918,28 @@ def create_modular_tables(conn) -> None:
             "detalhes_json": "text",
         },
     )
+    migrate_analysis = not _table_columns(conn, "mod_estadias_analise_manual")
+    conn.execute("""create table if not exists mod_estadias_analise_manual (
+        lcte_id integer primary key,
+        nf text,
+        analise_enviada_em text,
+        analise_respondida_em text,
+        atualizado_em text,
+        atualizado_por text
+    )""")
+    conn.execute("create index if not exists idx_estadias_analise_nf on mod_estadias_analise_manual(nf)")
+    if migrate_analysis:
+        legacy = conn.execute("""select lcte_id, max(nf), max(analise_enviada_em), max(analise_respondida_em)
+            from mod_estadias_cruzamento_inicial
+            where coalesce(analise_enviada_em, '') <> '' or coalesce(analise_respondida_em, '') <> ''
+            group by lcte_id""").fetchall()
+        for lcte_id, nf, sent_at, replied_at in legacy:
+            conn.execute("""insert into mod_estadias_analise_manual
+                (lcte_id, nf, analise_enviada_em, analise_respondida_em)
+                values (?, ?, ?, ?) on conflict(lcte_id) do nothing""", (lcte_id, nf, sent_at, replied_at))
+        conn.execute("""update mod_estadias_cruzamento_inicial
+            set analise_enviada_em = '', analise_respondida_em = ''
+            where coalesce(analise_enviada_em, '') <> '' or coalesce(analise_respondida_em, '') <> ''""")
     for table in modular_tables():
         _create_index_if_column(conn, table, f"idx_{table}_data_hora", "data_hora")
         _create_index_if_column(conn, table, f"idx_{table}_data_hora_validacao", "data_hora_validacao")

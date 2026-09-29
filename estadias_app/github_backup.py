@@ -18,6 +18,7 @@ import pandas as pd
 
 from src.database.connection import get_connection, read_sql
 from src.modules.estadias.repository import (
+    ANALYSIS_TABLE,
     AUDITORIA_TABLE,
     CONFIG_TABLE,
     CONCLUSOES_TABLE,
@@ -431,7 +432,7 @@ def backup_analysis_marks_to_github() -> dict[str, Any]:
     with _analysis_backup_lock:
         try:
             rows = read_sql(
-                f"select nf, analise_enviada_em, analise_respondida_em from {CROSS_TABLE} "
+                f"select nf, analise_enviada_em, analise_respondida_em from {ANALYSIS_TABLE} "
                 "where coalesce(analise_enviada_em, '') <> '' or coalesce(analise_respondida_em, '') <> '' "
                 "order by nf, analise_enviada_em"
             )
@@ -489,7 +490,8 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
             conflicting.add(nf)
         backed_up[nf] = dates
 
-    current = read_sql(f"select lcte_id, nf, analise_enviada_em, analise_respondida_em from {CROSS_TABLE}")
+    current = read_sql(f"""select c.lcte_id, c.nf, a.analise_enviada_em, a.analise_respondida_em
+        from {CROSS_TABLE} c left join {ANALYSIS_TABLE} a on a.lcte_id = c.lcte_id""")
     by_nf: dict[str, list[tuple[int, str, str]]] = {}
     for row in current.itertuples(index=False):
         nf = str(row.nf).strip() if pd.notna(row.nf) else ""

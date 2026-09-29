@@ -13,11 +13,28 @@ streamlit.cache_data = lambda **kwargs: lambda func: func
 sys.modules.setdefault("streamlit", streamlit)
 
 from src.modules.estadias import repository
+from src.database.connection import DbConnection
+from src.database.migrations import create_modular_tables
 from src.modules.estadias.page import _analysis_deadline_status
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_existing_analysis_dates_migrate_once(self):
+        with sqlite3.connect(":memory:") as raw:
+            raw.row_factory = sqlite3.Row
+            conn = DbConnection(raw, "sqlite")
+            create_modular_tables(conn)
+            raw.execute(f"drop table {repository.ANALYSIS_TABLE}")
+            raw.execute(f"insert into {repository.CROSS_TABLE} (lcte_id, nf, analise_enviada_em) values (1, '123', '2026-09-29T10:00:00')")
+            create_modular_tables(conn)
+            dates = raw.execute(f"select analise_enviada_em from {repository.ANALYSIS_TABLE} where lcte_id = 1").fetchone()[0]
+            legacy = raw.execute(f"select analise_enviada_em from {repository.CROSS_TABLE} where lcte_id = 1").fetchone()[0]
+            create_modular_tables(conn)
+            self.assertEqual(raw.execute(f"select count(*) from {repository.ANALYSIS_TABLE}").fetchone()[0], 1)
+        self.assertEqual(dates, "2026-09-29T10:00:00")
+        self.assertEqual(legacy, "")
+
     def test_fifteen_day_deadline_and_response(self):
         sent = "2026-09-29T10:00:00"
         self.assertEqual(_analysis_deadline_status(sent, "", datetime(2026, 10, 14, 9)), ("14/10/2026 10:00", "Aguardando resposta"))
@@ -26,13 +43,14 @@ class AnalysisDeadlineTest(unittest.TestCase):
 
     def test_marking_keeps_original_sent_time(self):
         with sqlite3.connect(":memory:") as conn:
-            conn.execute(f"create table {repository.CROSS_TABLE} (lcte_id integer, analise_enviada_em text, analise_respondida_em text, atualizado_em text, atualizado_por text)")
-            conn.execute(f"insert into {repository.CROSS_TABLE} (lcte_id) values (1)")
+            conn.execute(f"create table {repository.CROSS_TABLE} (lcte_id integer, nf text)")
+            conn.execute(f"create table {repository.ANALYSIS_TABLE} (lcte_id integer primary key, nf text, analise_enviada_em text, analise_respondida_em text, atualizado_em text, atualizado_por text)")
+            conn.execute(f"insert into {repository.CROSS_TABLE} values (1, '123')")
             with patch.object(repository, "get_connection", return_value=conn), patch.object(repository, "registrar_status_evento"), patch.object(repository, "_invalidate_read_cache"):
                 repository.save_analysis_flags(1, True, False, "tester")
-                sent = conn.execute(f"select analise_enviada_em from {repository.CROSS_TABLE}").fetchone()[0]
+                sent = conn.execute(f"select analise_enviada_em from {repository.ANALYSIS_TABLE}").fetchone()[0]
                 repository.save_analysis_flags(1, True, True, "tester")
-                stored = conn.execute(f"select analise_enviada_em, analise_respondida_em from {repository.CROSS_TABLE}").fetchone()
+                stored = conn.execute(f"select analise_enviada_em, analise_respondida_em from {repository.ANALYSIS_TABLE}").fetchone()
         self.assertEqual(stored[0], sent)
         self.assertTrue(stored[1])
 
@@ -69,11 +87,13 @@ class AnalysisDeadlineTest(unittest.TestCase):
 
     def test_receive_marks_preserves_existing_date(self):
         with sqlite3.connect(":memory:") as conn:
-            conn.execute(f"create table {repository.CROSS_TABLE} (lcte_id integer, analise_enviada_em text, analise_respondida_em text, atualizado_em text, atualizado_por text)")
-            conn.execute(f"insert into {repository.CROSS_TABLE} values (1, '2026-09-28T09:00:00', '', '', '')")
+            conn.execute(f"create table {repository.CROSS_TABLE} (lcte_id integer, nf text)")
+            conn.execute(f"create table {repository.ANALYSIS_TABLE} (lcte_id integer primary key, nf text, analise_enviada_em text, analise_respondida_em text, atualizado_em text, atualizado_por text)")
+            conn.execute(f"insert into {repository.CROSS_TABLE} values (1, '123')")
+            conn.execute(f"insert into {repository.ANALYSIS_TABLE} values (1, '123', '2026-09-28T09:00:00', '', '', '')")
             with patch.object(repository, "get_connection", return_value=conn), patch.object(repository, "_invalidate_read_cache"):
                 repository.restore_analysis_dates([(1, "2026-09-29T10:00:00", "2026-09-30T12:00:00")], "tester")
-                dates = conn.execute(f"select analise_enviada_em, analise_respondida_em from {repository.CROSS_TABLE}").fetchone()
+                dates = conn.execute(f"select analise_enviada_em, analise_respondida_em from {repository.ANALYSIS_TABLE}").fetchone()
         self.assertEqual(dates, ("2026-09-28T09:00:00", "2026-09-30T12:00:00"))
 
 

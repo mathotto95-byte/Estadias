@@ -37,6 +37,7 @@ RASTREADOR_NORMALIZED_TABLE = "mod_estadias_rastreador_normalizada"
 ESTADIA_POSITIONS_TABLE = "mod_estadias_posicoes_resultado"
 LOG_TABLE = "mod_estadias_logs_importacao"
 CROSS_TABLE = "mod_estadias_cruzamento_inicial"
+ANALYSIS_TABLE = "mod_estadias_analise_manual"
 CONFIG_TABLE = "mod_estadias_configuracoes"
 LOCAIS_TABLE = "mod_estadias_locais_operacionais"
 PARAMETROS_TABLE = "mod_estadias_parametros_cliente"
@@ -706,6 +707,10 @@ def placas_disponiveis() -> pd.DataFrame:
 @st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def read_cross(limit: int = 1000) -> pd.DataFrame:
     rows = read_filtered(CROSS_TABLE, {}, limit)
+    if not rows.empty:
+        marks = read_sql(f"select lcte_id, analise_enviada_em, analise_respondida_em from {ANALYSIS_TABLE}")
+        for column in ("analise_enviada_em", "analise_respondida_em"):
+            rows[column] = rows["lcte_id"].map(marks.set_index("lcte_id")[column]).fillna("") if not marks.empty else ""
     if not rows.empty and "horas_estadia" in rows:
         hours = pd.to_numeric(rows["horas_estadia"], errors="coerce").fillna(0)
         values = pd.to_numeric(rows.get("valor_estimado_estadia", pd.Series(0, index=rows.index)), errors="coerce")
@@ -718,18 +723,17 @@ def save_analysis_flags(lcte_id: int, sent: bool, replied: bool, usuario: str) -
         raise ValueError("Viagem ou marcacao de analise invalida.")
     now = brasilia_now_iso()
     with get_connection() as conn:
-        updated = conn.execute(
-            f"""
-            update {CROSS_TABLE}
-            set analise_enviada_em = case when ? then coalesce(nullif(analise_enviada_em, ''), ?) else '' end,
-                analise_respondida_em = case when ? then coalesce(nullif(analise_respondida_em, ''), ?) else '' end,
-                atualizado_em = ?, atualizado_por = ?
-            where lcte_id = ?
-            """,
-            (int(sent), now, int(sent and replied), now, now, usuario, int(lcte_id)),
-        ).rowcount
-    if not updated:
-        raise ValueError("Viagem nao localizada para marcar analise.")
+        trip = conn.execute(f"select nf from {CROSS_TABLE} where lcte_id = ? limit 1", (int(lcte_id),)).fetchone()
+        if not trip:
+            raise ValueError("Viagem nao localizada para marcar analise.")
+        conn.execute(f"""insert into {ANALYSIS_TABLE}
+            (lcte_id, nf, analise_enviada_em, analise_respondida_em, atualizado_em, atualizado_por)
+            values (?, ?, ?, ?, ?, ?) on conflict(lcte_id) do update set
+            nf = excluded.nf,
+            analise_enviada_em = case when ? then coalesce(nullif({ANALYSIS_TABLE}.analise_enviada_em, ''), excluded.analise_enviada_em) else '' end,
+            analise_respondida_em = case when ? then coalesce(nullif({ANALYSIS_TABLE}.analise_respondida_em, ''), excluded.analise_respondida_em) else '' end,
+            atualizado_em = excluded.atualizado_em, atualizado_por = excluded.atualizado_por""",
+            (int(lcte_id), trip[0], now if sent else "", now if replied else "", now, usuario, int(sent), int(replied)))
     _invalidate_read_cache()
     registrar_status_evento(int(lcte_id), usuario, "ATUALIZAR_ANALISE", valor_novo_json=f"enviada={sent}; respondida={replied}")
 
@@ -740,14 +744,16 @@ def restore_analysis_dates(updates: list[tuple[int, str, str]], usuario: str) ->
     now = brasilia_now_iso()
     with get_connection() as conn:
         for lcte_id, sent_at, replied_at in updates:
-            conn.execute(
-                f"""update {CROSS_TABLE}
-                set analise_enviada_em = coalesce(nullif(analise_enviada_em, ''), ?),
-                    analise_respondida_em = case when ? <> '' then coalesce(nullif(analise_respondida_em, ''), ?) else analise_respondida_em end,
-                    atualizado_em = ?, atualizado_por = ?
-                where lcte_id = ?""",
-                (sent_at, replied_at, replied_at, now, usuario, lcte_id),
-            )
+            trip = conn.execute(f"select nf from {CROSS_TABLE} where lcte_id = ? limit 1", (lcte_id,)).fetchone()
+            if not trip:
+                continue
+            conn.execute(f"""insert into {ANALYSIS_TABLE}
+                (lcte_id, nf, analise_enviada_em, analise_respondida_em, atualizado_em, atualizado_por)
+                values (?, ?, ?, ?, ?, ?) on conflict(lcte_id) do update set
+                analise_enviada_em = coalesce(nullif({ANALYSIS_TABLE}.analise_enviada_em, ''), excluded.analise_enviada_em),
+                analise_respondida_em = coalesce(nullif({ANALYSIS_TABLE}.analise_respondida_em, ''), excluded.analise_respondida_em),
+                atualizado_em = excluded.atualizado_em, atualizado_por = excluded.atualizado_por""",
+                (lcte_id, trip[0], sent_at, replied_at, now, usuario))
     _invalidate_read_cache()
     return len(updates)
 
@@ -756,7 +762,7 @@ def replace_cross(rows: list[dict[str, Any]], usuario: str) -> int:
     with get_connection() as conn:
         conn.execute(f"delete from {CROSS_TABLE}")
     now = brasilia_now_iso()
-    payload = [row | {"atualizado_em": now, "atualizado_por": usuario} for row in rows]
+    payload = [row | {"analise_enviada_em": "", "analise_respondida_em": "", "atualizado_em": now, "atualizado_por": usuario} for row in rows]
     return insert_rows(CROSS_TABLE, payload)
 
 
@@ -768,7 +774,7 @@ def replace_cross_subset(rows: list[dict[str, Any]], usuario: str, lcte_ids: lis
     with get_connection() as conn:
         conn.execute(f"delete from {CROSS_TABLE} where lcte_id in ({placeholders})", tuple(ids))
     now = brasilia_now_iso()
-    payload = [row | {"atualizado_em": now, "atualizado_por": usuario} for row in rows]
+    payload = [row | {"analise_enviada_em": "", "analise_respondida_em": "", "atualizado_em": now, "atualizado_por": usuario} for row in rows]
     inserted = insert_rows(CROSS_TABLE, payload)
     _invalidate_read_cache()
     return inserted

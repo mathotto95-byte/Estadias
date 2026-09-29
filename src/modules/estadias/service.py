@@ -2281,10 +2281,6 @@ def _merge_incremental_rows(existing: pd.DataFrame, recalculated: list[dict[str,
             counts["concluidos_preservados"] += 1
         else:
             chosen = row
-            if old:
-                for field in ("analise_enviada_em", "analise_respondida_em"):
-                    if old.get(field):
-                        chosen[field] = old[field]
             if not old:
                 counts["registros_novos"] += 1
             elif _row_signature(row) != _row_signature(old):
