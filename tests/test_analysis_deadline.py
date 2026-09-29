@@ -1,4 +1,5 @@
 import sqlite3
+import os
 import sys
 import types
 import unittest
@@ -49,6 +50,10 @@ class AnalysisDeadlineTest(unittest.TestCase):
         self.assertEqual(github_backup._seconds_until_analysis_backup(before, None), 1800)
         self.assertEqual(github_backup._seconds_until_analysis_backup(after, None), 0)
         self.assertGreater(github_backup._seconds_until_analysis_backup(after, after.date()), 23 * 3600)
+
+    def test_backup_branch_is_separate_from_deployed_main(self):
+        with patch.dict(os.environ, {"GITHUB_BRANCH": "main"}, clear=True):
+            self.assertEqual(github_backup.github_settings()["branch"], "backup-data")
 
 
 if __name__ == "__main__":

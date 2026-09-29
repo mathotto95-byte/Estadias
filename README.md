@@ -15,7 +15,7 @@ Configure no Streamlit em `Advanced settings > Secrets`:
 ```toml
 GITHUB_TOKEN = "seu_token_novo"
 GITHUB_REPOSITORY = "mathotto95-byte/Estadias"
-GITHUB_BRANCH = "main"
+GITHUB_BACKUP_BRANCH = "backup-data"
 GITHUB_AUTO_BACKUP = "SIM"
 GITHUB_BACKUP_PATH = "backups/estadias_latest.json"
 GITHUB_IMPORTS_BACKUP_PATH = "backups/estadias_importacoes_latest.json"
@@ -26,6 +26,7 @@ matheus = "123456"
 ```
 
 O token do GitHub precisa ter acesso ao repositorio `mathotto95-byte/Estadias` e permissao `Contents: Read and write`.
+O app e publicado da branch `main`; os backups ficam na branch `backup-data` para nao reiniciar o Streamlit a cada gravacao. `GITHUB_BRANCH = "main"` antigo pode ser removido dos Secrets.
 
 ## Backup
 

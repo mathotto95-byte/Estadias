@@ -84,7 +84,7 @@ _analysis_scheduler: threading.Thread | None = None
 SECRET_ALIASES = {
     "GITHUB_TOKEN": ["GITHUB_TOKEN", "github_token", "token"],
     "GITHUB_REPOSITORY": ["GITHUB_REPOSITORY", "github_repository", "repository", "repo"],
-    "GITHUB_BRANCH": ["GITHUB_BRANCH", "github_branch", "branch"],
+    "GITHUB_BACKUP_BRANCH": ["GITHUB_BACKUP_BRANCH", "github_backup_branch"],
     "GITHUB_BACKUP_PATH": ["GITHUB_BACKUP_PATH", "github_backup_path", "backup_path", "latest_path"],
     "GITHUB_IMPORTS_BACKUP_PATH": ["GITHUB_IMPORTS_BACKUP_PATH", "github_imports_backup_path", "imports_backup_path"],
     "GITHUB_AUTO_BACKUP": ["GITHUB_AUTO_BACKUP", "github_auto_backup", "auto_backup"],
@@ -148,7 +148,7 @@ def github_settings() -> dict[str, Any]:
     return {
         "token": _sanitize_token(_read_secret("GITHUB_TOKEN")),
         "repository": _read_secret("GITHUB_REPOSITORY", "mathotto95-byte/Estadias"),
-        "branch": _read_secret("GITHUB_BRANCH", "main"),
+        "branch": _read_secret("GITHUB_BACKUP_BRANCH", "backup-data"),
         "latest_path": _read_secret("GITHUB_BACKUP_PATH", "backups/estadias_latest.json"),
         "previous_path": "backups/estadias_previous.json",
         "imports_path": _read_secret("GITHUB_IMPORTS_BACKUP_PATH", "backups/estadias_importacoes_latest.json"),
