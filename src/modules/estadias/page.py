@@ -249,7 +249,7 @@ def _estadia_period_specs(df: pd.DataFrame) -> list[dict[str, object]]:
         return specs
     for _, row in df.iterrows():
         common = {
-            "lcte_id": row.get("id") or row.get("lcte_id"),
+            "lcte_id": row.get("lcte_id") or row.get("id"),
             "cte": row.get("cte"),
             "nf": row.get("nf"),
             "placa": row.get("placa_norm"),
@@ -480,7 +480,7 @@ def _estadia_period_rows(df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for _, row in df.iterrows():
         common = {
-            "ID viagem": row.get("id"),
+            "ID viagem": row.get("lcte_id") or row.get("id"),
             "CT-e": row.get("cte"),
             "NF": row.get("nf"),
             "Placa": row.get("placa_norm"),

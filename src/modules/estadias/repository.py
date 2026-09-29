@@ -610,15 +610,26 @@ def read_estadia_positions_period(
         return pd.DataFrame()
     tipo = str(tipo_estadia or "").strip().upper()
     if int(lcte_id or 0) and tipo:
+        where = ["lcte_id = ?", "upper(coalesce(tipo_estadia, '')) = ?"]
+        params: list[Any] = [int(lcte_id), tipo]
+        if str(placa_norm or "").strip():
+            where.append("placa_norm = ?")
+            params.append(str(placa_norm).strip())
+        if str(start or "").strip():
+            where.append("data_hora >= ?")
+            params.append(str(start))
+        if str(end or "").strip():
+            where.append("data_hora <= ?")
+            params.append(str(end))
         return read_sql(
             f"""
             select *
             from {ESTADIA_POSITIONS_TABLE}
-            where lcte_id = ? and upper(coalesce(tipo_estadia, '')) = ?
+            where {' and '.join(where)}
             order by data_hora asc
             limit ?
             """,
-            (int(lcte_id or 0), tipo, int(limit)),
+            tuple(params + [int(limit)]),
         )
     if str(placa_norm or "").strip() and str(start or "").strip() and str(end or "").strip():
         return read_sql(
