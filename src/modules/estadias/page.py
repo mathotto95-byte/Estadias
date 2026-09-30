@@ -322,17 +322,9 @@ def _format_speed(value: object) -> str:
 
 
 def _safe_pdf_filename(spec: dict[str, object], index: int) -> str:
-    parts = [
-        "relatorio_posicoes",
-        str(index + 1),
-        str(spec.get("tipo") or ""),
-        str(spec.get("placa") or ""),
-        f"nf_{spec.get('nf') or ''}",
-    ]
-    name = "_".join(part for part in parts if part).lower()
-    name = re.sub(r"[^a-z0-9_-]+", "_", name)
-    name = re.sub(r"_+", "_", name).strip("_")
-    return f"{name or f'relatorio_posicoes_{index + 1}'}.pdf"
+    placa = re.sub(r"[^A-Za-z0-9_-]", "", str(spec.get("placa") or "")) or "Sem placa"
+    nf = re.sub(r"[^A-Za-z0-9_-]", "", str(spec.get("nf") or "")) or "Sem nota"
+    return f"Relatório rastreador ({placa}) e ({nf}).pdf"
 
 
 def _tracker_positions_pdf(
@@ -447,10 +439,14 @@ def _tracker_positions_pdf(
 def _tracker_positions_pdf_zip(specs: list[dict[str, object]], selected_indexes: list[int]) -> bytes:
     output = BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
+        used_names: set[str] = set()
         for index in selected_indexes:
             if index < 0 or index >= len(specs):
                 continue
             filename = _safe_pdf_filename(specs[index], index)
+            if filename in used_names:
+                filename = f"{filename[:-4]} ({index + 1}).pdf"
+            used_names.add(filename)
             archive.writestr(filename, _tracker_positions_pdf(specs_override=[specs[index]]))
     return output.getvalue()
 
@@ -2133,7 +2129,7 @@ def render_cross_page(usuario: str) -> None:
                             button_label = "Baixar PDFs selecionados"
                         else:
                             download_bytes = _tracker_positions_pdf(specs_override=[pdf_specs[pdf_selected[0]]])
-                            download_name = f"relatorio_posicoes_rastreador_{download_stamp}.pdf"
+                            download_name = _safe_pdf_filename(pdf_specs[pdf_selected[0]], pdf_selected[0])
                             mime_type = "application/pdf"
                             button_label = "Baixar PDF selecionado"
                     except Exception as exc:

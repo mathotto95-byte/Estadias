@@ -34,9 +34,20 @@ class PdfPositionPeriodTest(unittest.TestCase):
             result = page._tracker_positions_pdf_zip([spec], [0])
         with ZipFile(BytesIO(result)) as archive:
             item = archive.infolist()[0]
+            self.assertEqual(item.filename, "Relatório rastreador (ABC1234) e (86135).pdf")
             self.assertEqual(item.compress_type, ZIP_STORED)
             text = PdfReader(BytesIO(archive.read(item.filename))).pages[0].extract_text()
         self.assertIn("86135", text)
+
+    def test_duplicate_plate_and_invoice_get_unique_zip_names(self):
+        spec = {"placa": "ABC1234", "nf": "86135"}
+        with patch.object(page, "_tracker_positions_pdf", return_value=b"pdf"):
+            result = page._tracker_positions_pdf_zip([spec, spec], [0, 1])
+        with ZipFile(BytesIO(result)) as archive:
+            self.assertEqual(archive.namelist(), [
+                "Relatório rastreador (ABC1234) e (86135).pdf",
+                "Relatório rastreador (ABC1234) e (86135) (2).pdf",
+            ])
 
     def test_pdf_uses_lcte_trip_id_not_cross_row_id(self):
         rows = pd.DataFrame([{
