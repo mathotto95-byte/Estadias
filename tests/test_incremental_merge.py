@@ -36,13 +36,13 @@ class IncrementalMergeTest(unittest.TestCase):
         self.assertEqual(ids, {1})
         self.assertEqual(counts["registros_atualizados"], 1)
 
-    def test_analysis_marking_survives_recalculation(self):
+    def test_recalculation_does_not_copy_analysis_marking(self):
         existing = pd.DataFrame([{
             "lcte_id": 1, "nf": "old", "analise_enviada_em": "2026-09-29T10:00:00",
             "analise_respondida_em": "",
         }])
         rows, _, _, _ = _merge_incremental_rows(existing, [{"lcte_id": 1, "nf": "new"}], False)
-        self.assertEqual(rows[0]["analise_enviada_em"], "2026-09-29T10:00:00")
+        self.assertNotIn("analise_enviada_em", rows[0])
 
 
 if __name__ == "__main__":

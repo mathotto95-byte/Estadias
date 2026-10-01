@@ -707,7 +707,7 @@ def placas_disponiveis() -> pd.DataFrame:
 @st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def read_cross(limit: int = 1000) -> pd.DataFrame:
     rows = read_filtered(CROSS_TABLE, {}, limit)
-    if not rows.empty:
+    if not rows.empty and "lcte_id" in rows and table_exists(ANALYSIS_TABLE):
         marks = read_sql(f"select lcte_id, analise_enviada_em, analise_respondida_em from {ANALYSIS_TABLE}")
         for column in ("analise_enviada_em", "analise_respondida_em"):
             rows[column] = rows["lcte_id"].map(marks.set_index("lcte_id")[column]).fillna("") if not marks.empty else ""

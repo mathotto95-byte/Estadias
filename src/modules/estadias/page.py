@@ -725,10 +725,12 @@ def render_imports_page(usuario: str, role: str) -> None:
                 status_text.info("Enviando backup de resultados para o GitHub...")
                 backup_result = backup_to_github("resultado_pos_calculo")
                 result["backup_github"] = backup_result
-                progress.progress(95)
-                status_text.info("Limpando posicoes brutas do rastreador para liberar banco...")
-                cleanup_result = clear_estadias_rastreador_database()
-                result["limpeza_rastreador"] = cleanup_result
+                if backup_result.get("status") in {"SUCESSO", "SEM_ALTERACAO"}:
+                    progress.progress(95)
+                    status_text.info("Limpando posicoes brutas do rastreador para liberar banco...")
+                    result["limpeza_rastreador"] = clear_estadias_rastreador_database()
+                else:
+                    status_text.warning("Backup nao confirmado. Posicoes brutas mantidas para novo recalculo.")
                 progress.progress(100)
                 status_text.success("Importacao, calculo, backup e limpeza concluidos.")
             else:
@@ -757,6 +759,7 @@ def render_imports_page(usuario: str, role: str) -> None:
             if last_tracker_result.get("limpeza_rastreador"):
                 cleanup = last_tracker_result.get("limpeza_rastreador") or {}
                 st.success(f"Rastreador bruto limpo: {cleanup.get('total_deleted', 0)} registro(s) removidos.")
+                st.caption("Para recalcular com novas regras, reimporte o CSV na tela de Estadias.")
             render_dataframe(last_tracker_result.get("resultado"), height=360, max_rows=200)
 
 
@@ -2000,9 +2003,35 @@ def render_cross_page(usuario: str) -> None:
         if not rastreador_count:
             missing.append("RASTREADOR")
         st.warning(
-            "Existe resultado importado por JSON, mas nao ha base suficiente para recalcular com as regras atuais. "
-            f"Reimporte {' e '.join(missing)} para liberar o botao de recalculo."
+            f"Falta {' e '.join(missing)} no banco para recalcular. "
+            "A importacao pode ter calculado as estadias e apagado as posicoes brutas; CONTROL sozinho nao permite recalculo."
         )
+    if lcte_count and not rastreador_count:
+        with st.expander("Recalcular com CSV de posicoes"):
+            csv_files = st.file_uploader(
+                "CSV do rastreador exportado pelo pgAdmin",
+                type=["csv"], accept_multiple_files=True, key="estadias_recalculo_csv",
+            )
+            if st.button("Importar CSV e recalcular", disabled=not csv_files, key="estadias_recalculo_csv_botao"):
+                try:
+                    for file in csv_files:
+                        validate_pgadmin_rastreador_csv(file.getvalue())
+                    result = import_rastreador_files(list(csv_files), usuario)
+                    if not result["arquivos_sucesso"] or not result["placas_importadas"]:
+                        st.error("Nenhum CSV com placa valida foi importado. Confira os arquivos e tente novamente.")
+                        render_dataframe(result["resultado"], height=250, max_rows=20)
+                    else:
+                        with st.spinner("Recalculando viagens das placas importadas..."):
+                            _, summary = atualizar_cruzamento_incremental_placas(usuario, result["placas_importadas"])
+                            backup = backup_to_github("recalculo_csv")
+                        if backup.get("status") in {"SUCESSO", "SEM_ALTERACAO"}:
+                            clear_estadias_rastreador_database()
+                            st.success(f"Recalculo concluido: {summary['estadias_identificadas']} estadia(s). Backup salvo; CSV bruto removido.")
+                            st.session_state["skip_next_auto_backup"] = True
+                        else:
+                            st.warning(f"Recalculo concluido, mas o backup falhou ({backup.get('message') or backup.get('status')}). CSV mantido no banco para nova tentativa.")
+                except Exception as exc:
+                    st.error(f"Nao foi possivel recalcular: {exc}. As posicoes importadas foram mantidas para nova tentativa.")
     if col_update.button(
         button_label,
         type="primary",
