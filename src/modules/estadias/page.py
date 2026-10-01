@@ -685,8 +685,8 @@ def render_imports_page(usuario: str, role: str) -> None:
         )
         tracker_mode = _duplicate_mode(role, "estadias_rastreador_duplicate_mode")
         process_and_clean = st.checkbox(
-            "Calcular estadias apos importar e limpar rastreador bruto",
-            value=True,
+            "Calcular imediatamente apos importar e limpar rastreador bruto",
+            value=False,
             help="Mantem no banco apenas o resultado do cruzamento e as posicoes resumidas das estadias para PDF. As posicoes importadas do rastreador sao removidas ao final.",
         )
         col_xls, col_pgadmin = st.columns(2)
@@ -735,7 +735,7 @@ def render_imports_page(usuario: str, role: str) -> None:
                 status_text.success("Importacao, calculo, backup e limpeza concluidos.")
             else:
                 progress.progress(100)
-                status_text.success("Importacao concluida.")
+                status_text.success("Importacao concluida. Abra Estadias para recalcular.")
             st.session_state["skip_next_auto_backup"] = True
             st.session_state["estadias_last_tracker_import_result"] = result
             st.session_state["estadias_rastreador_upload_version"] = int(st.session_state.get("estadias_rastreador_upload_version", 0)) + 1
@@ -1982,6 +1982,14 @@ def render_performance_rw_page() -> None:
     render_dataframe(panel, height=620, max_rows=2000)
 
 
+def _recalculation_requirement(lcte_count: int, rastreador_count: int) -> str:
+    if not lcte_count:
+        return "LCTE"
+    if not rastreador_count:
+        return "CSV"
+    return "PRONTO"
+
+
 def render_cross_page(usuario: str) -> None:
     saved_count = st.session_state.pop("analysis_saved_count", 0)
     if saved_count:
@@ -1990,55 +1998,24 @@ def render_cross_page(usuario: str) -> None:
     col_title.subheader("Viagens")
     lcte_count = table_count(LCTE_NORMALIZED_TABLE)
     rastreador_count = table_count(RASTREADOR_NORMALIZED_TABLE)
-    cross_count = table_count(CROSS_TABLE)
+    requirement = _recalculation_requirement(lcte_count, rastreador_count)
     plate_options = ["TODAS", *select_distinct(LCTE_NORMALIZED_TABLE, "placa_norm", 3000)]
     plate_update = col_plate.selectbox("Atualizar placa", plate_options, key="estadias_cross_update_placa")
     selected_plate = "" if plate_update == "TODAS" else str(plate_update or "").strip()
-    button_label = "RECALCULAR PLACA" if selected_plate else "RECALCULAR REGRAS"
-    can_recalculate = bool(lcte_count and rastreador_count)
-    if not can_recalculate and cross_count:
-        missing = []
-        if not lcte_count:
-            missing.append("LCTE")
-        if not rastreador_count:
-            missing.append("RASTREADOR")
-        st.warning(
-            f"Falta {' e '.join(missing)} no banco para recalcular. "
-            "A importacao pode ter calculado as estadias e apagado as posicoes brutas; CONTROL sozinho nao permite recalculo."
-        )
-    if lcte_count and not rastreador_count:
-        with st.expander("Recalcular com CSV de posicoes"):
-            csv_files = st.file_uploader(
-                "CSV do rastreador exportado pelo pgAdmin",
-                type=["csv"], accept_multiple_files=True, key="estadias_recalculo_csv",
-            )
-            if st.button("Importar CSV e recalcular", disabled=not csv_files, key="estadias_recalculo_csv_botao"):
-                try:
-                    for file in csv_files:
-                        validate_pgadmin_rastreador_csv(file.getvalue())
-                    result = import_rastreador_files(list(csv_files), usuario)
-                    if not result["arquivos_sucesso"] or not result["placas_importadas"]:
-                        st.error("Nenhum CSV com placa valida foi importado. Confira os arquivos e tente novamente.")
-                        render_dataframe(result["resultado"], height=250, max_rows=20)
-                    else:
-                        with st.spinner("Recalculando viagens das placas importadas..."):
-                            _, summary = atualizar_cruzamento_incremental_placas(usuario, result["placas_importadas"])
-                            backup = backup_to_github("recalculo_csv")
-                        if backup.get("status") in {"SUCESSO", "SEM_ALTERACAO"}:
-                            clear_estadias_rastreador_database()
-                            st.success(f"Recalculo concluido: {summary['estadias_identificadas']} estadia(s). Backup salvo; CSV bruto removido.")
-                            st.session_state["skip_next_auto_backup"] = True
-                        else:
-                            st.warning(f"Recalculo concluido, mas o backup falhou ({backup.get('message') or backup.get('status')}). CSV mantido no banco para nova tentativa.")
-                except Exception as exc:
-                    st.error(f"Nao foi possivel recalcular: {exc}. As posicoes importadas foram mantidas para nova tentativa.")
-    if col_update.button(
-        button_label,
-        type="primary",
-        use_container_width=True,
-        disabled=not can_recalculate,
-        help="Reprocessa o cruzamento usando LCTE como base e rastreador como permanencia. O JSON de resultado sozinho nao contem as posicoes do rastreador.",
-    ):
+    csv_files = None
+    if requirement == "LCTE":
+        st.warning("LCTE nao encontrado. Importe o LCTE para identificar as viagens antes de recalcular.")
+    elif requirement == "CSV":
+        st.warning("As posicoes brutas foram removidas apos o ultimo calculo. Selecione o CSV do rastreador abaixo para recalcular. CONTROL nao substitui o rastreador.")
+        csv_files = st.file_uploader("CSV de posicoes do rastreador", type=["csv"], accept_multiple_files=True, key="estadias_recalculo_csv")
+    button_label = {"LCTE": "IMPORTAR LCTE", "CSV": "RECALCULAR COM CSV"}.get(requirement, "RECALCULAR PLACA" if selected_plate else "RECALCULAR REGRAS")
+    clicked_recalculate = col_update.button(button_label, type="primary", use_container_width=True)
+    if clicked_recalculate and requirement == "LCTE":
+        st.session_state["next_menu"] = "Importação"
+        st.rerun()
+    elif clicked_recalculate and requirement == "CSV" and not csv_files:
+        st.warning("Selecione o CSV de posicoes para recalcular.")
+    elif clicked_recalculate:
         progress_bar = st.progress(0)
         progress_text = st.empty()
 
@@ -2047,21 +2024,45 @@ def render_cross_page(usuario: str) -> None:
             progress_bar.progress(pct)
             progress_text.caption(f"{pct}% - {message}")
 
-        update_progress(0, 100, "Iniciando atualizacao...")
-        cross_updated, resumo = atualizar_cruzamento_incremental(usuario, update_progress, selected_plate)
-        progress_bar.progress(100)
-        progress_text.caption("100% - Atualizacao concluida.")
-        scope = f"Placa {selected_plate}: " if selected_plate else ""
-        st.success(
-            f"{scope}Atualizacao concluida: "
-            f"{resumo['registros_novos']} registros novos, "
-            f"{resumo['estadias_identificadas']} estadias, "
-            f"{resumo['pendencias']} pendencias, "
-            f"{resumo['registros_atualizados']} registros atualizados, "
-            f"{resumo['concluidos_preservados']} concluidos preservados e "
-            f"{resumo['erros']} erros."
-        )
-        cross = cross_updated
+        try:
+            if csv_files:
+                for file in csv_files:
+                    validate_pgadmin_rastreador_csv(file.getvalue())
+                result = import_rastreador_files(list(csv_files), usuario, progress_callback=lambda done, total, name: update_progress(done, max(total, 1), f"Importando {name}"))
+                if not result["arquivos_sucesso"] or not result["placas_importadas"]:
+                    raise ValueError("Nenhum CSV com placa valida foi importado. Confira o arquivo e tente novamente.")
+                if selected_plate and selected_plate not in result["placas_importadas"]:
+                    raise ValueError(f"A placa {selected_plate} nao foi encontrada no CSV importado.")
+                plates = [selected_plate] if selected_plate else result["placas_importadas"]
+                cross_updated, resumo = atualizar_cruzamento_incremental_placas(usuario, plates, update_progress)
+            else:
+                cross_updated, resumo = atualizar_cruzamento_incremental(usuario, update_progress, selected_plate)
+            progress_bar.progress(100)
+            progress_text.caption("100% - Atualizacao concluida.")
+            scope = f"Placa {selected_plate}: " if selected_plate else ""
+            st.success(
+                f"{scope}Atualizacao concluida: "
+                f"{resumo['registros_novos']} registros novos, "
+                f"{resumo['estadias_identificadas']} estadias, "
+                f"{resumo['pendencias']} pendencias, "
+                f"{resumo['registros_atualizados']} registros atualizados, "
+                f"{resumo['concluidos_preservados']} concluidos preservados e "
+                f"{resumo['erros']} erros."
+            )
+            backup = backup_to_github("recalculo_csv" if csv_files else "recalculo_regras")
+            if backup.get("status") in {"SUCESSO", "SEM_ALTERACAO"}:
+                if selected_plate:
+                    st.info("Backup confirmado. Posicoes mantidas porque o calculo foi limitado a uma placa.")
+                else:
+                    clear_estadias_rastreador_database()
+                    st.success("Backup confirmado. Posicoes brutas removidas.")
+                st.session_state["skip_next_auto_backup"] = True
+            else:
+                st.warning(f"Backup nao confirmado: {backup.get('message') or backup.get('status')}. Posicoes mantidas para nova tentativa.")
+            cross = cross_updated
+        except Exception as exc:
+            st.error(f"Nao foi possivel recalcular: {exc}")
+            cross = read_cross(200000)
     else:
         cross = read_cross(200000)
 

@@ -20,6 +20,13 @@ from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_write_marks_backup_check_without_database_scan(self):
+        state = {}
+        with patch.object(repository.st, "cache_data", create=True) as cache, patch.object(repository.st, "session_state", state, create=True):
+            repository._invalidate_read_cache()
+        cache.clear.assert_called_once()
+        self.assertTrue(state["estadias_data_changed"])
+
     def test_existing_analysis_dates_migrate_once(self):
         with sqlite3.connect(":memory:") as raw:
             raw.row_factory = sqlite3.Row

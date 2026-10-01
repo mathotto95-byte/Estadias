@@ -7,9 +7,15 @@ streamlit.cache_data = lambda **kwargs: lambda func: func
 sys.modules.setdefault("streamlit", streamlit)
 
 from src.modules.estadias.imports import RASTREADOR_ALIASES, column_map, normalize_rastreador_row, read_tabular_file, validate_pgadmin_rastreador_csv
+from src.modules.estadias.page import _recalculation_requirement
 
 
 class PgAdminCsvTest(unittest.TestCase):
+    def test_recalculation_points_to_the_missing_source(self):
+        self.assertEqual(_recalculation_requirement(0, 0), "LCTE")
+        self.assertEqual(_recalculation_requirement(1, 0), "CSV")
+        self.assertEqual(_recalculation_requirement(1, 1), "PRONTO")
+
     def test_accepts_tracker_export_and_rejects_other_layout(self):
         content = (
             'Placa,Data,Município da referência,Cliente referência,Referência,Latitude,Longitude\n'

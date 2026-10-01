@@ -18,13 +18,10 @@ from estadias_app.github_backup import (
     data_signature,
     github_auto_backup_enabled,
     github_backup_configured,
-    github_diagnostic,
     github_backup_versions,
-    github_settings,
     import_backup_json_bytes,
     imported_database_counts,
     imported_database_tables,
-    prune_history,
     restore_from_github_if_empty,
     restore_github_version,
     restore_analysis_marks_from_github,
@@ -33,18 +30,12 @@ from estadias_app.github_backup import (
     test_github_connection,
 )
 from src.config.settings import ROOT_DIR, ensure_directories
-from src.database.connection import database_status
 from src.database.migrations import create_modular_tables
 from src.database.connection import get_connection
 from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
-    render_config_page,
     render_cross_page,
-    render_dashboard_page,
     render_imports_page,
-    render_logs_page,
-    render_performance_rw_page,
-    render_rastreador_page,
 )
 from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now, brasilia_now_iso
@@ -52,13 +43,8 @@ from src.utils.rw_theme import apply_theme, render_brand_header, render_login_he
 
 
 MENU = [
-    "Dashboard",
-    "Importacoes",
-    "Relatorios Rastreador por Placa",
+    "Importação",
     "Estadias",
-    "PerformanceRw",
-    "Logs de Importacao",
-    "Configuracoes",
     "Backup do Banco",
 ]
 
@@ -70,6 +56,7 @@ LARGE_SESSION_EXPORT_KEYS = (
 )
 
 
+@st.cache_resource(show_spinner=False)
 def initialize_database() -> None:
     ensure_directories()
     with get_connection() as conn:
@@ -148,6 +135,9 @@ def _auto_backup_if_data_changed() -> None:
             st.session_state["last_data_signature"] = data_signature()
         except Exception:
             pass
+        st.session_state.pop("estadias_data_changed", None)
+        return
+    if "last_data_signature" in st.session_state and not st.session_state.pop("estadias_data_changed", False):
         return
     try:
         signature = data_signature()
@@ -157,86 +147,6 @@ def _auto_backup_if_data_changed() -> None:
     st.session_state["last_data_signature"] = signature
     if previous and previous != signature:
         _run_backup_background("alteracao_dados")
-
-
-def _render_github_sidebar() -> None:
-    settings = github_settings()
-    diagnostic = github_diagnostic()
-    if st.sidebar.button("Atualizar pagina", use_container_width=True, key="refresh_page"):
-        st.rerun()
-    st.sidebar.divider()
-    st.sidebar.subheader("Backup GitHub")
-    st.sidebar.caption("Destino: arquivos JSON no GitHub, nao Release.")
-    st.sidebar.caption("Duas copias completas: atual e anterior.")
-    if github_backup_configured():
-        st.sidebar.caption(f"Repo: {settings['repository']} | Branch: {settings['branch']}")
-        st.sidebar.caption(f"Resultado: {settings['latest_path']}")
-        st.sidebar.caption(f"Anterior: {settings['previous_path']}")
-    else:
-        st.sidebar.warning("GitHub backup nao configurado.")
-    st.sidebar.caption(f"Token: {diagnostic.get('token_masked')} | {diagnostic.get('token_length', 0)} caracteres")
-
-    if st.sidebar.button("Testar conexao GitHub", use_container_width=True):
-        result = test_github_connection()
-        st.session_state["last_github_connection_test"] = result
-        if result.get("status") == "SUCESSO":
-            st.session_state.pop("last_github_backup_result", None)
-    last_test = st.session_state.get("last_github_connection_test") or {}
-    if last_test:
-        if last_test.get("status") == "SUCESSO":
-            st.sidebar.success(last_test.get("message"))
-        else:
-            st.sidebar.warning(last_test.get("message") or last_test.get("status"))
-
-    last_restore = st.session_state.get("last_github_restore_result") or {}
-    if last_restore:
-        st.sidebar.success(f"Restaurado do GitHub: {last_restore.get('records', 0)} registro(s).")
-
-    last_backup = st.session_state.get("last_github_backup_result") or {}
-    if last_backup:
-        status = str(last_backup.get("status") or "")
-        if status == "SUCESSO":
-            st.sidebar.success(f"Backup GitHub OK: {last_backup.get('records', 0)} registro(s).")
-        elif status == "EM_SEGUNDO_PLANO":
-            st.sidebar.info("Backup GitHub iniciado em segundo plano.")
-        elif status not in {"", "NAO_CONFIGURADO"}:
-            st.sidebar.warning(last_backup.get("message") or status)
-
-    if st.sidebar.button("Enviar backup para GitHub", use_container_width=True, disabled=not github_backup_configured()):
-        st.session_state.pop("last_github_connection_test", None)
-        result = backup_to_github("manual")
-        st.session_state["last_github_backup_result"] = result
-        if result.get("status") == "SUCESSO":
-            st.sidebar.success("Backup enviado para GitHub.")
-        else:
-            st.sidebar.warning(result.get("message") or "Backup GitHub nao concluido.")
-
-    if st.sidebar.button(
-        "Limpar historico antigo de backups",
-        use_container_width=True,
-        disabled=not github_backup_configured(),
-        help="Remove os arquivos historicos antigos. Execute apos confirmar as duas copias completas.",
-    ):
-        prune_result = prune_history()
-        if prune_result.get("status") == "SUCESSO":
-            st.sidebar.success(f"Historico limpo: {prune_result.get('removidos', 0)} arquivo(s) removido(s).")
-        elif prune_result.get("status") == "NAO_CONFIGURADO":
-            st.sidebar.warning("GitHub backup nao configurado.")
-        else:
-            st.sidebar.warning(f"Limpeza parcial: {prune_result.get('removidos', 0)} removido(s), {prune_result.get('erros', 0)} erro(s).")
-
-
-def _render_status() -> None:
-    status = database_status()
-    cols = st.columns(4)
-    cols[0].metric("Banco", "Supabase" if status["db_type"] == "postgres" else "SQLite")
-    cols[1].metric("Conexao", "OK" if status["connected"] else "Falha")
-    cols[2].metric("Viagens LCTE", int(status.get("rows") or 0))
-    cols[3].metric("Atualizado", brasilia_now().strftime("%d/%m/%Y %H:%M"))
-    if not status["connected"]:
-        st.error(status.get("error") or "Banco indisponivel.")
-    else:
-        st.caption(status.get("database") or "")
 
 
 def _database_zip() -> bytes:
@@ -267,6 +177,15 @@ def _database_zip() -> bytes:
 def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
     st.caption("O backup salva resultados, posicoes resumidas das estadias para PDF e bases leves. O rastreador bruto e temporario.")
+    backup_col, test_col = st.columns(2)
+    if backup_col.button("Enviar backup para GitHub", use_container_width=True, disabled=not github_backup_configured()):
+        st.session_state["last_github_backup_result"] = backup_to_github("manual")
+    if test_col.button("Testar conexao GitHub", use_container_width=True):
+        st.session_state["last_github_connection_test"] = test_github_connection()
+    for key in ("last_github_backup_result", "last_github_connection_test"):
+        result = st.session_state.get(key) or {}
+        if result:
+            (st.success if result.get("status") in {"SUCESSO", "SEM_ALTERACAO"} else st.warning)(result.get("message") or result.get("status"))
     if github_backup_configured():
         if st.button("Verificar copias no GitHub", use_container_width=True):
             try:
@@ -466,26 +385,20 @@ def main() -> None:
     initialize_database()
     _restore_from_github_once()
     start_analysis_backup_scheduler()
-    _render_github_sidebar()
+    if st.sidebar.button("Atualizar pagina", use_container_width=True):
+        st.rerun()
     render_brand_header("Estadias", "Sistema independente com banco proprio e backup direto no GitHub.")
-    _render_status()
+    if st.session_state.pop("next_menu", None) == "Importação":
+        st.session_state["main_menu"] = "Importação"
+    if st.session_state.get("main_menu") not in MENU:
+        st.session_state["main_menu"] = "Estadias"
     page = st.sidebar.radio("Menu", MENU, key="main_menu")
     st.divider()
 
-    if page == "Dashboard":
-        render_dashboard_page()
-    elif page == "Importacoes":
+    if page == "Importação":
         render_imports_page(username, "ADMIN")
-    elif page == "Relatorios Rastreador por Placa":
-        render_rastreador_page()
     elif page == "Estadias":
         render_cross_page(username)
-    elif page == "PerformanceRw":
-        render_performance_rw_page()
-    elif page == "Logs de Importacao":
-        render_logs_page()
-    elif page == "Configuracoes":
-        render_config_page(username)
     elif page == "Backup do Banco":
         render_backup_page()
 

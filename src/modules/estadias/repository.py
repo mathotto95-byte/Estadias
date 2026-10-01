@@ -24,6 +24,7 @@ def _invalidate_read_cache() -> None:
     """Chamado apos qualquer escrita para evitar exibir dados obsoletos."""
     try:
         st.cache_data.clear()
+        st.session_state["estadias_data_changed"] = True
     except Exception:
         pass
 
