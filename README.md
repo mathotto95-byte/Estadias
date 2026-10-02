@@ -1,5 +1,18 @@
 # Estadias
 
+## Resultados do PerformanceRW
+
+Abra **PerformanceRW → Atualizar resultado** para consultar a análise publicada pelo Performance. A associação usa NF + placa exatas; chaves ambíguas e resultados com chegadas diferentes das atuais ficam Sem correspondência. Nenhuma estadia é modificada e nenhuma regra é recalculada neste sistema. A tela mostra as cinco regras, atendimento geral, motivo e data da análise, com exportação CSV.
+
+O token GitHub atual precisa de Contents: Read no repositório `mathotto95-byte/Performance`. Se necessário, configure separadamente:
+
+```toml
+[performance_results]
+token = "SEU_TOKEN_COM_LEITURA_DO_PERFORMANCE"
+```
+
+O resultado é lido de `backups/performance_latest.json` na branch main. Primeiro publique a análise no Performance. Os backups do Estadias passam a incluir as datas de envio para análise em metadados próprios, sem alterar as tabelas; o Performance usa esses envios para calcular o prazo de 15 dias.
+
 Aplicacao independente do modulo Estadias, com banco proprio e backup enxuto direto em arquivo JSON no GitHub.
 
 ## Deploy no Streamlit

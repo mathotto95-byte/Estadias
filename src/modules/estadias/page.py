@@ -1965,13 +1965,26 @@ def _performance_rw_table(cross: pd.DataFrame, observations: pd.DataFrame) -> pd
 
 
 def render_performance_rw_page() -> None:
-    st.title("PerformanceRw")
+    from estadias_app.performance import receive, attach
+    st.title("PerformanceRW")
     cross = read_cross(200000)
     if cross.empty:
         st.info("Nenhuma viagem calculada em Estadias.")
         return
-    ids = tuple(sorted(set(pd.to_numeric(cross["lcte_id"], errors="coerce").dropna().astype(int))))
-    panel = _performance_rw_table(cross, read_lcte_observations(ids))
+    st.caption("Resultados calculados exclusivamente no PerformanceRW. Associação exata por NF + placa; nenhuma estadia é alterada.")
+    if st.button("Atualizar resultado"):
+        try:
+            st.session_state["performance_result"] = receive()
+        except ValueError as exc:
+            st.error(str(exc))
+    payload = st.session_state.get("performance_result")
+    if not payload:
+        st.info("Clique em Atualizar resultado após publicar a análise no PerformanceRW.")
+        return
+    st.caption(f"Publicação analisada em: {payload['analyzed_at']}")
+    with st.expander("Bases utilizadas na análise"):
+        st.json(payload["sources"])
+    panel = attach(cross, payload)
     st.download_button(
         "Exportar CSV",
         panel.to_csv(index=False, sep=";").encode("utf-8-sig"),

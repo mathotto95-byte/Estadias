@@ -407,6 +407,9 @@ def backup_payload() -> dict[str, Any]:
         "generated_at": brasilia_now_iso(),
         "records": {table: len(values) for table, values in rows.items()},
         "tables": rows,
+        "performance_envios": json.loads(read_sql(
+            f"select lcte_id, analise_enviada_em from {ANALYSIS_TABLE}"
+        ).to_json(orient="records", force_ascii=False, date_format="iso")) if _table_exists(ANALYSIS_TABLE) else [],
     }
 
 

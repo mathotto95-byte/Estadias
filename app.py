@@ -36,6 +36,7 @@ from src.modules.estadias.repository import clear_estadias_full_database, clear_
 from src.modules.estadias.page import (
     render_cross_page,
     render_imports_page,
+    render_performance_rw_page,
 )
 from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now, brasilia_now_iso
@@ -45,6 +46,7 @@ from src.utils.rw_theme import apply_theme, render_brand_header, render_login_he
 MENU = [
     "Importação",
     "Estadias",
+    "PerformanceRW",
     "Backup do Banco",
 ]
 
@@ -399,6 +401,8 @@ def main() -> None:
         render_imports_page(username, "ADMIN")
     elif page == "Estadias":
         render_cross_page(username)
+    elif page == "PerformanceRW":
+        render_performance_rw_page()
     elif page == "Backup do Banco":
         render_backup_page()
 
