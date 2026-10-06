@@ -924,9 +924,15 @@ def create_modular_tables(conn) -> None:
         nf text,
         analise_enviada_em text,
         analise_respondida_em text,
+        sem_tratativa_origem integer default 0,
+        sem_tratativa_destino integer default 0,
         atualizado_em text,
         atualizado_por text
     )""")
+    ensure_columns(conn, "mod_estadias_analise_manual", {
+        "sem_tratativa_origem": "integer default 0",
+        "sem_tratativa_destino": "integer default 0",
+    })
     conn.execute("create index if not exists idx_estadias_analise_nf on mod_estadias_analise_manual(nf)")
     if migrate_analysis:
         legacy = conn.execute("""select lcte_id, max(nf), max(analise_enviada_em), max(analise_respondida_em)

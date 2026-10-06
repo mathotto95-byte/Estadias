@@ -36,6 +36,7 @@ from src.modules.estadias.repository import (
     RASTREADOR_ORIGINAL_TABLE,
     STATUS_LOG_TABLE,
     restore_analysis_dates,
+    save_no_treatment_flag,
 )
 from src.utils.timezone import brasilia_now, brasilia_now_iso
 
@@ -61,6 +62,7 @@ ESTADIAS_TABLES = [
 
 BACKUP_TABLES = [
     CROSS_TABLE,
+    ANALYSIS_TABLE,
     ESTADIA_POSITIONS_TABLE,
     CONCLUSOES_TABLE,
     AUDITORIA_TABLE,
@@ -435,15 +437,14 @@ def backup_analysis_marks_to_github() -> dict[str, Any]:
     with _analysis_backup_lock:
         try:
             rows = read_sql(
-                f"select nf, analise_enviada_em, analise_respondida_em from {ANALYSIS_TABLE} "
-                "where coalesce(analise_enviada_em, '') <> '' or coalesce(analise_respondida_em, '') <> '' "
-                "order by nf, analise_enviada_em"
+                f"select nf, analise_enviada_em, analise_respondida_em, sem_tratativa_origem, sem_tratativa_destino "
+                f"from {ANALYSIS_TABLE} order by nf, analise_enviada_em"
             )
             if rows.empty:
                 return {"status": "IGNORADO_BASE_VAZIA", "message": "Nenhuma marcacao encontrada; backup anterior preservado."}
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["Nota fiscal", "Enviada em", "Respondida em"])
+            writer.writerow(["Nota fiscal", "Enviada em", "Respondida em", "Sem tratativa origem", "Sem tratativa destino"])
             writer.writerows(rows.fillna("").itertuples(index=False, name=None))
             _upload_bytes(
                 github_settings(),
@@ -468,44 +469,52 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
             raise ValueError("O backup das marcacoes ainda nao existe no GitHub; ele sera criado apos as 19h.") from exc
         raise
     reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
-    expected = ["Nota fiscal", "Enviada em", "Respondida em"]
-    if reader.fieldnames != expected:
+    legacy_fields = ["Nota fiscal", "Enviada em", "Respondida em"]
+    expected = [*legacy_fields, "Sem tratativa origem", "Sem tratativa destino"]
+    if reader.fieldnames not in (legacy_fields, expected):
         raise ValueError("O backup das marcacoes tem colunas invalidas.")
 
-    backed_up: dict[str, tuple[str, str]] = {}
+    backed_up: dict[str, tuple[str, str, int, int]] = {}
     conflicting: set[str] = set()
     invalid = 0
     for row in reader:
         nf = str(row["Nota fiscal"] or "").strip()
         sent_at = str(row["Enviada em"] or "").strip()
         replied_at = str(row["Respondida em"] or "").strip()
+        origin = str(row.get("Sem tratativa origem") or "0").strip()
+        destination = str(row.get("Sem tratativa destino") or "0").strip()
         try:
-            if not nf or not sent_at or (replied_at and not sent_at):
+            if not nf or (replied_at and not sent_at) or origin not in {"0", "1"} or destination not in {"0", "1"}:
                 raise ValueError
-            datetime.fromisoformat(sent_at)
+            if sent_at:
+                datetime.fromisoformat(sent_at)
             if replied_at:
                 datetime.fromisoformat(replied_at)
         except ValueError:
             invalid += 1
             continue
-        dates = (sent_at, replied_at)
+        dates = (sent_at, replied_at, int(origin), int(destination))
         if nf in backed_up and backed_up[nf] != dates:
             conflicting.add(nf)
         backed_up[nf] = dates
 
-    current = read_sql(f"""select c.lcte_id, c.nf, a.analise_enviada_em, a.analise_respondida_em
+    current = read_sql(f"""select c.lcte_id, c.nf, a.analise_enviada_em, a.analise_respondida_em,
+        a.sem_tratativa_origem, a.sem_tratativa_destino
         from {CROSS_TABLE} c left join {ANALYSIS_TABLE} a on a.lcte_id = c.lcte_id""")
-    by_nf: dict[str, list[tuple[int, str, str]]] = {}
+    by_nf: dict[str, list[tuple[int, str, str, int, int]]] = {}
     for row in current.itertuples(index=False):
         nf = str(row.nf).strip() if pd.notna(row.nf) else ""
         if nf:
             sent = str(row.analise_enviada_em) if pd.notna(row.analise_enviada_em) else ""
             replied = str(row.analise_respondida_em) if pd.notna(row.analise_respondida_em) else ""
-            by_nf.setdefault(nf, []).append((int(row.lcte_id), sent, replied))
+            origin = int(getattr(row, "sem_tratativa_origem", 0) or 0) if pd.notna(getattr(row, "sem_tratativa_origem", 0)) else 0
+            destination = int(getattr(row, "sem_tratativa_destino", 0) or 0) if pd.notna(getattr(row, "sem_tratativa_destino", 0)) else 0
+            by_nf.setdefault(nf, []).append((int(row.lcte_id), sent, replied, origin, destination))
 
     updates: list[tuple[int, str, str]] = []
+    flag_updates: list[tuple[int, str]] = []
     missing = ambiguous = already_present = 0
-    for nf, (sent_at, replied_at) in backed_up.items():
+    for nf, (sent_at, replied_at, origin, destination) in backed_up.items():
         if nf in conflicting:
             continue
         existing = by_nf.get(nf, [])
@@ -513,14 +522,24 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
             missing += 1
         elif len({item[0] for item in existing}) != 1:
             ambiguous += 1
-        elif any(not item[1] or (replied_at and not item[2]) for item in existing):
-            updates.append((existing[0][0], sent_at, replied_at))
         else:
-            already_present += 1
+            lcte_id = existing[0][0]
+            if sent_at and any(not item[1] or (replied_at and not item[2]) for item in existing):
+                updates.append((lcte_id, sent_at, replied_at))
+            if origin and not existing[0][3]:
+                flag_updates.append((lcte_id, "ORIGEM"))
+            if destination and not existing[0][4]:
+                flag_updates.append((lcte_id, "DESTINO"))
+            if not any(item[0] == lcte_id for item in updates) and not any(item[0] == lcte_id for item in flag_updates):
+                already_present += 1
 
-    restored = restore_analysis_dates(updates, usuario) if not dry_run else 0
+    if not dry_run:
+        restore_analysis_dates(updates, usuario)
+        for lcte_id, tipo in flag_updates:
+            save_no_treatment_flag(lcte_id, tipo, True, usuario)
+    restored = len({lcte_id for lcte_id, *_ in updates} | {lcte_id for lcte_id, _ in flag_updates}) if not dry_run else 0
     return {
-        "backup": len(backed_up), "ready": len(updates), "restored": restored,
+        "backup": len(backed_up), "ready": len({lcte_id for lcte_id, *_ in updates} | {lcte_id for lcte_id, _ in flag_updates}), "restored": restored,
         "missing": missing, "ambiguous": ambiguous + len(conflicting),
         "invalid": invalid, "already_present": already_present,
     }
@@ -578,9 +597,15 @@ def _valid_complete_backup(content: bytes) -> bool:
         ):
             part = payload.get(key) or {}
             tables = part.get("tables") or {}
-            if part.get("schema") != schema or not all(isinstance(tables.get(table), list) for table in expected_tables):
+            required = [table for table in expected_tables if key != "results" or table != ANALYSIS_TABLE]
+            if part.get("schema") != schema or not all(isinstance(tables.get(table), list) for table in required):
                 return False
-            if any(int(part.get("records", {}).get(table, -1)) != len(tables[table]) for table in expected_tables):
+            if any(int(part.get("records", {}).get(table, -1)) != len(tables[table]) for table in required):
+                return False
+            if ANALYSIS_TABLE in tables and key == "results" and (
+                not isinstance(tables[ANALYSIS_TABLE], list)
+                or int(part.get("records", {}).get(ANALYSIS_TABLE, -1)) != len(tables[ANALYSIS_TABLE])
+            ):
                 return False
         return any(count > 0 for key in ("results", "imports") for count in payload[key]["records"].values())
     except (ValueError, TypeError, KeyError, AttributeError):
@@ -638,7 +663,8 @@ def data_signature() -> str:
                 pieces.append(f"{table}:0:0")
                 continue
             try:
-                row = conn.execute(f"select count(*) as total, max(id) as max_id from {table}").fetchone()
+                marker = "atualizado_em" if table == ANALYSIS_TABLE else "id"
+                row = conn.execute(f"select count(*) as total, max({marker}) as max_id from {table}").fetchone()
                 total = row[0] if row else 0
                 max_id = row[1] if row and len(row) > 1 else 0
                 pieces.append(f"{table}:{total or 0}:{max_id or 0}")
@@ -661,6 +687,8 @@ def restore_payload(payload: dict[str, Any], mode: str = "merge") -> dict[str, A
     replace = mode == "replace"
     with get_connection() as conn:
         for table in target_tables:
+            if table == ANALYSIS_TABLE and table not in tables:
+                continue
             rows = tables.get(table) or []
             table_restored = table_ignored = table_errors = 0
             if replace and _table_exists(table):

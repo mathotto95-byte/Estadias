@@ -709,9 +709,12 @@ def placas_disponiveis() -> pd.DataFrame:
 def read_cross(limit: int = 1000) -> pd.DataFrame:
     rows = read_filtered(CROSS_TABLE, {}, limit)
     if not rows.empty and "lcte_id" in rows and table_exists(ANALYSIS_TABLE):
-        marks = read_sql(f"select lcte_id, analise_enviada_em, analise_respondida_em from {ANALYSIS_TABLE}")
+        marks = read_sql(f"select lcte_id, analise_enviada_em, analise_respondida_em, sem_tratativa_origem, sem_tratativa_destino from {ANALYSIS_TABLE}")
+        indexed = marks.set_index("lcte_id") if not marks.empty else marks
         for column in ("analise_enviada_em", "analise_respondida_em"):
-            rows[column] = rows["lcte_id"].map(marks.set_index("lcte_id")[column]).fillna("") if not marks.empty else ""
+            rows[column] = rows["lcte_id"].map(indexed[column]).fillna("") if not marks.empty else ""
+        for column in ("sem_tratativa_origem", "sem_tratativa_destino"):
+            rows[column] = rows["lcte_id"].map(indexed[column]).fillna(0).astype(int) if not marks.empty else 0
     if not rows.empty and "horas_estadia" in rows:
         hours = pd.to_numeric(rows["horas_estadia"], errors="coerce").fillna(0)
         values = pd.to_numeric(rows.get("valor_estimado_estadia", pd.Series(0, index=rows.index)), errors="coerce")
@@ -737,6 +740,23 @@ def save_analysis_flags(lcte_id: int, sent: bool, replied: bool, usuario: str) -
             (int(lcte_id), trip[0], now if sent else "", now if replied else "", now, usuario, int(sent), int(replied)))
     _invalidate_read_cache()
     registrar_status_evento(int(lcte_id), usuario, "ATUALIZAR_ANALISE", valor_novo_json=f"enviada={sent}; respondida={replied}")
+
+
+def save_no_treatment_flag(lcte_id: int, tipo: str, marked: bool, usuario: str) -> None:
+    if int(lcte_id) <= 0 or tipo not in {"ORIGEM", "DESTINO"}:
+        raise ValueError("Viagem ou tipo de estadia invalido.")
+    column = "sem_tratativa_origem" if tipo == "ORIGEM" else "sem_tratativa_destino"
+    now = brasilia_now_iso()
+    with get_connection() as conn:
+        trip = conn.execute(f"select nf from {CROSS_TABLE} where lcte_id = ? limit 1", (int(lcte_id),)).fetchone()
+        if not trip:
+            raise ValueError("Viagem nao localizada para marcar sem tratativa.")
+        conn.execute(f"""insert into {ANALYSIS_TABLE} (lcte_id, nf, {column}, atualizado_em, atualizado_por)
+            values (?, ?, ?, ?, ?) on conflict(lcte_id) do update set
+            {column} = excluded.{column}, atualizado_em = excluded.atualizado_em,
+            atualizado_por = excluded.atualizado_por""", (int(lcte_id), trip[0], int(marked), now, usuario))
+    _invalidate_read_cache()
+    registrar_status_evento(int(lcte_id), usuario, "SEM_TRATATIVA", valor_novo_json=f"tipo={tipo}; marcado={marked}")
 
 
 def restore_analysis_dates(updates: list[tuple[int, str, str]], usuario: str) -> int:

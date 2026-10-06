@@ -207,7 +207,7 @@ def render_backup_page() -> None:
                 except Exception as exc:
                     st.error(f"Falha ao restaurar a copia: {exc}")
         with st.expander("Receber marcacoes de analise do GitHub"):
-            st.caption("Recupera apenas datas de envio e resposta por nota fiscal. Datas ja preenchidas nao sao substituidas.")
+            st.caption("Recupera datas de envio, resposta e flags Sem tratativa por nota fiscal. Marcacoes existentes nao sao substituidas.")
             if st.button("Verificar backup das marcacoes", use_container_width=True):
                 try:
                     st.session_state["analysis_restore_preview"] = restore_analysis_marks_from_github()

@@ -45,6 +45,7 @@ from src.modules.estadias.repository import (
     sample,
     save_conclusao,
     save_analysis_flags,
+    save_no_treatment_flag,
     save_config,
     save_locais,
     save_parametros,
@@ -844,6 +845,7 @@ PANEL_DEFAULT_COLUMNS = {
         "Enviada em",
         "Resposta recebida",
         "Respondida em",
+        "Sem tratativa",
         "Prazo resposta",
         "Situação análise",
         "Relatorio CONTROL",
@@ -1687,6 +1689,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Enviada em": _format_datetime_display(sent_at) if sent_at else "",
                     "Resposta recebida": bool(replied_at),
                     "Respondida em": _format_datetime_display(replied_at) if replied_at else "",
+                    "Sem tratativa": _safe_bool_value(row.get("sem_tratativa_origem" if tipo == "ORIGEM" else "sem_tratativa_destino")),
                     "Prazo resposta": deadline,
                     "Situação análise": analysis_status,
                     "Diferenca": f"{int(round(diff_value))} min" if diff_value is not None else "",
@@ -1740,6 +1743,11 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
     filtered = df.copy()
     if filtered.empty:
         return filtered
+    treatment = str(filters.get("tratativa") or "Ativos")
+    if treatment == "Ativos":
+        filtered = filtered[~filtered["Sem tratativa"].fillna(False).astype(bool)]
+    elif treatment == "Sem tratativa":
+        filtered = filtered[filtered["Sem tratativa"].fillna(False).astype(bool)]
     dates = pd.to_datetime(filtered["data_inicio_viagem_referencia"], errors="coerce")
     anos = filters.get("anos") or []
     meses = filters.get("meses") or []
@@ -1812,7 +1820,9 @@ def _render_summary_filters(df: pd.DataFrame) -> dict[str, object]:
             "status_estadia": col_i.selectbox("Status Estadia", ["Todos", "ESTADIA", "SEM ESTADIA", "PENDENTE"], key="estadias_resumo_status_estadia"),
         }
     )
-    filters["analise"] = st.selectbox("Análise", ["Todos", "Não enviada", "Aguardando resposta", "Prazo vencido", "Respondida"], key="estadias_resumo_analise")
+    col_analise, col_tratativa = st.columns(2)
+    filters["analise"] = col_analise.selectbox("Análise", ["Todos", "Não enviada", "Aguardando resposta", "Prazo vencido", "Respondida"], key="estadias_resumo_analise")
+    filters["tratativa"] = col_tratativa.selectbox("Lista", ["Ativos", "Sem tratativa", "Todos"], key="estadias_resumo_tratativa")
     return filters
 
 
@@ -2103,6 +2113,7 @@ def render_cross_page(usuario: str) -> None:
         "status": st.session_state.get("estadias_resumo_status", ""),
         "status_estadia": st.session_state.get("estadias_resumo_status_estadia", ""),
         "analise": st.session_state.get("estadias_resumo_analise", ""),
+        "tratativa": st.session_state.get("estadias_resumo_tratativa", "Ativos"),
     }
     filtered_by_fields = _apply_summary_filters(summary, session_filters)
 
@@ -2118,7 +2129,7 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
+    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Sem tratativa", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
@@ -2166,7 +2177,7 @@ def render_cross_page(usuario: str) -> None:
             )
             if len(pdf_selected) > MAX_PDFS_PER_ZIP:
                 st.warning(f"Selecione no maximo {MAX_PDFS_PER_ZIP} estadias por vez para evitar queda da sessao.")
-            col_prepare, col_download, col_save_analysis = st.columns(3)
+            col_prepare, col_download = st.columns(2)
             if col_prepare.button(
                 "Preparar PDF/ZIP",
                 use_container_width=True,
@@ -2201,17 +2212,13 @@ def render_cross_page(usuario: str) -> None:
                         )
             else:
                 col_download.button("Baixar arquivo", use_container_width=True, disabled=True)
-            save_analysis_clicked = col_save_analysis.button(
-                "Salvar marcações de análise", type="primary", use_container_width=True, disabled=table.empty
-            )
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
-        save_analysis_clicked = st.button("Salvar marcações de análise", type="primary", disabled=table.empty)
 
-    editable = {"Enviada para análise", "Resposta recebida"}
+    editable = {"Enviada para análise", "Resposta recebida", "Sem tratativa"}
     editor_table = table.head(500)
     editor_key = "estadias_analise_editor_" + hashlib.sha1(
-        filtered.loc[editor_table.index, ["lcte_id", "Tipo", "Enviada para análise", "Resposta recebida"]].to_csv(index=False).encode("utf-8")
+        filtered.loc[editor_table.index, ["lcte_id", "Tipo", "Enviada para análise", "Resposta recebida", "Sem tratativa"]].to_csv(index=False).encode("utf-8")
     ).hexdigest()[:12]
     if len(table) > len(editor_table):
         st.caption(f"Exibindo {len(editor_table)} de {len(table)} linhas para edição. Refine os filtros para localizar outras viagens.")
@@ -2225,25 +2232,33 @@ def render_cross_page(usuario: str) -> None:
         column_config={
             "Enviada para análise": st.column_config.CheckboxColumn("Enviada para análise"),
             "Resposta recebida": st.column_config.CheckboxColumn("Resposta recebida"),
+            "Sem tratativa": st.column_config.CheckboxColumn("Sem tratativa", help="Retira esta linha da lista ativa sem apagar a viagem."),
             "lcte_id": st.column_config.NumberColumn("ID viagem", disabled=True),
         },
         key=editor_key,
     )
-    if save_analysis_clicked:
+    if st.button("Salvar alterações da lista", type="primary", use_container_width=True, disabled=editor_table.empty):
         updates = {}
+        no_treatment_updates = {}
         for index in editor_table.index:
             sent = bool(edited_table.at[index, "Enviada para análise"])
             replied = bool(edited_table.at[index, "Resposta recebida"])
+            lcte_id = int(editor_table.at[index, "lcte_id"])
             if sent != bool(editor_table.at[index, "Enviada para análise"]) or replied != bool(editor_table.at[index, "Resposta recebida"]):
-                updates[int(editor_table.at[index, "lcte_id"])] = (sent, replied)
+                updates[lcte_id] = (sent, replied)
+            marked = bool(edited_table.at[index, "Sem tratativa"])
+            if marked != bool(editor_table.at[index, "Sem tratativa"]):
+                no_treatment_updates[(lcte_id, str(editor_table.at[index, "Tipo"]))] = marked
         if any(replied and not sent for sent, replied in updates.values()):
             st.error("Marque o envio para análise antes de registrar uma resposta.")
-        elif not updates:
-            st.info("Nenhuma marcação alterada.")
+        elif not updates and not no_treatment_updates:
+            st.info("Nenhuma alteração na lista.")
         else:
             for lcte_id, (sent, replied) in updates.items():
                 save_analysis_flags(lcte_id, sent, replied, usuario)
-            st.session_state["analysis_saved_count"] = len(updates)
+            for (lcte_id, tipo), marked in no_treatment_updates.items():
+                save_no_treatment_flag(lcte_id, tipo, marked, usuario)
+            st.session_state["analysis_saved_count"] = len(set(updates) | {key[0] for key in no_treatment_updates})
             st.session_state["skip_next_auto_backup"] = True
             st.rerun()
     _render_quick_conclusion(filtered, usuario)
