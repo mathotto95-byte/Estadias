@@ -46,6 +46,7 @@ from src.modules.estadias.repository import (
     save_conclusao,
     save_analysis_flags,
     save_no_treatment_flag,
+    save_manual_conferences,
     save_config,
     save_locais,
     save_parametros,
@@ -846,6 +847,8 @@ PANEL_DEFAULT_COLUMNS = {
         "Resposta recebida",
         "Respondida em",
         "Sem tratativa",
+        "Conferência",
+        "Motivo conferência",
         "Prazo resposta",
         "Situação análise",
         "Relatorio CONTROL",
@@ -1476,6 +1479,62 @@ def _status_estadia_from_minutes(tracker_minutes: float | None, estadia_minutes:
     return "PENDENTE", "SEM DADOS"
 
 
+def _conference_suggestion(row: pd.Series) -> tuple[str, str]:
+    if row.get("Status Estadia") != "ESTADIA" or row.get("Tipo") != "DESTINO":
+        return "A CONFERIR", "Sem regra automatica conclusiva"
+    arrival = pd.to_datetime(row.get("Chegada Rastreador"), dayfirst=True, errors="coerce")
+    departure = pd.to_datetime(row.get("Saida Rastreador"), dayfirst=True, errors="coerce")
+    limit = pd.to_datetime(row.get("Data Limite"), dayfirst=True, errors="coerce")
+    if any(pd.isna(value) for value in (arrival, departure, limit)):
+        return "A CONFERIR", "Data limite ou posicoes insuficientes"
+    # A date-only limit means the whole calendar day, not midnight as a hard arrival cutoff.
+    if abs((limit.normalize() - arrival.normalize()).days) > 30:
+        return "A CONFERIR", "Data limite distante da viagem; conferir formato da data"
+    eligible_start = max(arrival, limit.normalize())
+    if departure - eligible_start < timedelta(hours=24):
+        return "INVALIDA", "Menos de 24 horas apos o inicio elegivel no destino"
+    return "A CONFERIR", "Prazo compativel; verificar comprovantes e demais regras"
+
+
+def _apply_conference(summary: pd.DataFrame) -> pd.DataFrame:
+    result = summary.copy()
+    suggestions = result.apply(_conference_suggestion, axis=1) if not result.empty else []
+    result["Conferência"] = [str(row.get("Conferência manual") or verdict) for (_, row), (verdict, _) in zip(result.iterrows(), suggestions)]
+    result["Motivo conferência"] = [str(row.get("Motivo manual") or reason) for (_, row), (_, reason) in zip(result.iterrows(), suggestions)]
+    return result
+
+
+def _review_rows_from_excel(uploaded: object, summary: pd.DataFrame) -> tuple[list[tuple[int, str, str, str]], int]:
+    sheet = pd.read_excel(uploaded, dtype=str).fillna("")
+    required = {"lcte_id", "Tipo", "Placa", "Notas"}
+    if not required.issubset(sheet.columns) or sheet.shape[1] < 6:
+        raise ValueError("Planilha de conferencia sem lcte_id, Tipo, Placa, Notas e colunas E/F.")
+    current = {(str(row["lcte_id"]), str(row["Tipo"]), str(row["Placa"]), str(row["Notas"]))
+               for _, row in summary.iterrows()}
+    items: dict[tuple[int, str], tuple[int, str, str, str]] = {}
+    skipped = 0
+    for _, row in sheet.iterrows():
+        verdict = str(row.iloc[4]).strip().upper()
+        reason = str(row.iloc[5]).strip()
+        if verdict not in {"", "VALIDA", "INVALIDA"}:
+            skipped += 1
+            continue
+        if not verdict and not reason:
+            continue
+        try:
+            lcte_id = int(float(row["lcte_id"]))
+        except (TypeError, ValueError):
+            skipped += 1
+            continue
+        tipo = str(row["Tipo"]).strip().upper()
+        key = (str(lcte_id), tipo, str(row["Placa"]).strip(), str(row["Notas"]).strip())
+        if key not in current:
+            skipped += 1
+            continue
+        items[(lcte_id, tipo)] = (lcte_id, tipo, verdict or "A CONFERIR", reason)
+    return list(items.values()), skipped
+
+
 def _analysis_deadline_status(sent_at: object, replied_at: object, now: datetime | None = None) -> tuple[str, str]:
     if pd.isna(sent_at) or not str(sent_at or "").strip():
         return "", "Não enviada"
@@ -1576,6 +1635,8 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
         "Confianca do bloco",
         "Motivo da escolha",
         "Fonte Status Estadia",
+        "Conferência manual",
+        "Motivo manual",
         "Tempo Rastreador em minutos",
         "Tempo Control em minutos",
         "lcte_id",
@@ -1690,6 +1751,8 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Resposta recebida": bool(replied_at),
                     "Respondida em": _format_datetime_display(replied_at) if replied_at else "",
                     "Sem tratativa": _safe_bool_value(row.get("sem_tratativa_origem" if tipo == "ORIGEM" else "sem_tratativa_destino")),
+                    "Conferência manual": row.get("conferencia_origem" if tipo == "ORIGEM" else "conferencia_destino") or "",
+                    "Motivo manual": row.get("motivo_conferencia_origem" if tipo == "ORIGEM" else "motivo_conferencia_destino") or "",
                     "Prazo resposta": deadline,
                     "Situação análise": analysis_status,
                     "Diferenca": f"{int(round(diff_value))} min" if diff_value is not None else "",
@@ -1767,6 +1830,7 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
         ("Status", "status"),
         ("Status Estadia", "status_estadia"),
         ("Situação análise", "analise"),
+        ("Conferência", "conferencia"),
     ]
     for column, key in text_filters:
         value = str(filters.get(key) or "").strip()
@@ -1820,9 +1884,10 @@ def _render_summary_filters(df: pd.DataFrame) -> dict[str, object]:
             "status_estadia": col_i.selectbox("Status Estadia", ["Todos", "ESTADIA", "SEM ESTADIA", "PENDENTE"], key="estadias_resumo_status_estadia"),
         }
     )
-    col_analise, col_tratativa = st.columns(2)
+    col_analise, col_tratativa, col_conferencia = st.columns(3)
     filters["analise"] = col_analise.selectbox("Análise", ["Todos", "Não enviada", "Aguardando resposta", "Prazo vencido", "Respondida"], key="estadias_resumo_analise")
     filters["tratativa"] = col_tratativa.selectbox("Lista", ["Ativos", "Sem tratativa", "Todos"], key="estadias_resumo_tratativa")
+    filters["conferencia"] = col_conferencia.selectbox("Conferência", ["Todos", "A CONFERIR", "VALIDA", "INVALIDA"], key="estadias_resumo_conferencia")
     return filters
 
 
@@ -2101,7 +2166,19 @@ def render_cross_page(usuario: str) -> None:
             st.error(str(exc))
     performance_payload = st.session_state.get("performance_result")
     st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else "Publique a análise no Performance e clique em Atualizar PerformanceRW para receber os prazos e o atendimento das regras.")
-    summary = enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)
+    summary = _apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload))
+    with st.expander("Importar conferencia manual da planilha"):
+        review_file = st.file_uploader("Planilha exportada do painel com pareceres nas colunas E e F", type="xlsx", key="estadias_conferencia_arquivo")
+        if review_file is not None:
+            try:
+                review_items, skipped = _review_rows_from_excel(review_file, summary)
+                st.caption(f"Pareceres localizados: {len(review_items)}. Sem correspondencia exata com viagem, placa e nota: {skipped}.")
+                if st.button("Importar pareceres", disabled=not review_items, key="estadias_conferencia_importar"):
+                    save_manual_conferences(review_items, usuario)
+                    st.success(f"{len(review_items)} pareceres salvos.")
+                    st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),
@@ -2114,6 +2191,7 @@ def render_cross_page(usuario: str) -> None:
         "status_estadia": st.session_state.get("estadias_resumo_status_estadia", ""),
         "analise": st.session_state.get("estadias_resumo_analise", ""),
         "tratativa": st.session_state.get("estadias_resumo_tratativa", "Ativos"),
+        "conferencia": st.session_state.get("estadias_resumo_conferencia", "Todos"),
     }
     filtered_by_fields = _apply_summary_filters(summary, session_filters)
 
@@ -2129,7 +2207,7 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Sem tratativa", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
+    mandatory = ["lcte_id", "Tipo", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Sem tratativa", "Conferência", "Motivo conferência", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
@@ -2215,10 +2293,10 @@ def render_cross_page(usuario: str) -> None:
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
 
-    editable = {"Enviada para análise", "Resposta recebida", "Sem tratativa"}
+    editable = {"Enviada para análise", "Resposta recebida", "Sem tratativa", "Conferência", "Motivo conferência"}
     editor_table = table.head(500)
     editor_key = "estadias_analise_editor_" + hashlib.sha1(
-        filtered.loc[editor_table.index, ["lcte_id", "Tipo", "Enviada para análise", "Resposta recebida", "Sem tratativa"]].to_csv(index=False).encode("utf-8")
+        filtered.loc[editor_table.index, ["lcte_id", "Tipo", "Enviada para análise", "Resposta recebida", "Sem tratativa", "Conferência", "Motivo conferência"]].to_csv(index=False).encode("utf-8")
     ).hexdigest()[:12]
     if len(table) > len(editor_table):
         st.caption(f"Exibindo {len(editor_table)} de {len(table)} linhas para edição. Refine os filtros para localizar outras viagens.")
@@ -2233,6 +2311,8 @@ def render_cross_page(usuario: str) -> None:
             "Enviada para análise": st.column_config.CheckboxColumn("Enviada para análise"),
             "Resposta recebida": st.column_config.CheckboxColumn("Resposta recebida"),
             "Sem tratativa": st.column_config.CheckboxColumn("Sem tratativa", help="Retira esta linha da lista ativa sem apagar a viagem."),
+            "Conferência": st.column_config.SelectboxColumn("Conferência", options=["A CONFERIR", "VALIDA", "INVALIDA"], required=True),
+            "Motivo conferência": st.column_config.TextColumn("Motivo conferência"),
             "lcte_id": st.column_config.NumberColumn("ID viagem", disabled=True),
         },
         key=editor_key,
@@ -2240,6 +2320,7 @@ def render_cross_page(usuario: str) -> None:
     if st.button("Salvar alterações da lista", type="primary", use_container_width=True, disabled=editor_table.empty):
         updates = {}
         no_treatment_updates = {}
+        conference_updates = []
         for index in editor_table.index:
             sent = bool(edited_table.at[index, "Enviada para análise"])
             replied = bool(edited_table.at[index, "Resposta recebida"])
@@ -2249,16 +2330,24 @@ def render_cross_page(usuario: str) -> None:
             marked = bool(edited_table.at[index, "Sem tratativa"])
             if marked != bool(editor_table.at[index, "Sem tratativa"]):
                 no_treatment_updates[(lcte_id, str(editor_table.at[index, "Tipo"]))] = marked
+            verdict = str(edited_table.at[index, "Conferência"] or "").strip().upper()
+            reason = str(edited_table.at[index, "Motivo conferência"] or "").strip()
+            if verdict not in {"A CONFERIR", "VALIDA", "INVALIDA"}:
+                st.error(f"Parecer invalido na viagem {lcte_id}.")
+                return
+            if verdict != str(editor_table.at[index, "Conferência"]) or reason != str(editor_table.at[index, "Motivo conferência"]):
+                conference_updates.append((lcte_id, str(editor_table.at[index, "Tipo"]), verdict, reason))
         if any(replied and not sent for sent, replied in updates.values()):
             st.error("Marque o envio para análise antes de registrar uma resposta.")
-        elif not updates and not no_treatment_updates:
+        elif not updates and not no_treatment_updates and not conference_updates:
             st.info("Nenhuma alteração na lista.")
         else:
             for lcte_id, (sent, replied) in updates.items():
                 save_analysis_flags(lcte_id, sent, replied, usuario)
             for (lcte_id, tipo), marked in no_treatment_updates.items():
                 save_no_treatment_flag(lcte_id, tipo, marked, usuario)
-            st.session_state["analysis_saved_count"] = len(set(updates) | {key[0] for key in no_treatment_updates})
+            save_manual_conferences(conference_updates, usuario)
+            st.session_state["analysis_saved_count"] = len(set(updates) | {key[0] for key in no_treatment_updates} | {item[0] for item in conference_updates})
             st.session_state["skip_next_auto_backup"] = True
             st.rerun()
     _render_quick_conclusion(filtered, usuario)

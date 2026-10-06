@@ -926,12 +926,20 @@ def create_modular_tables(conn) -> None:
         analise_respondida_em text,
         sem_tratativa_origem integer default 0,
         sem_tratativa_destino integer default 0,
+        conferencia_origem text,
+        conferencia_destino text,
+        motivo_conferencia_origem text,
+        motivo_conferencia_destino text,
         atualizado_em text,
         atualizado_por text
     )""")
     ensure_columns(conn, "mod_estadias_analise_manual", {
         "sem_tratativa_origem": "integer default 0",
         "sem_tratativa_destino": "integer default 0",
+        "conferencia_origem": "text",
+        "conferencia_destino": "text",
+        "motivo_conferencia_origem": "text",
+        "motivo_conferencia_destino": "text",
     })
     conn.execute("create index if not exists idx_estadias_analise_nf on mod_estadias_analise_manual(nf)")
     if migrate_analysis:

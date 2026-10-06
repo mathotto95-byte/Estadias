@@ -37,6 +37,7 @@ from src.modules.estadias.repository import (
     STATUS_LOG_TABLE,
     restore_analysis_dates,
     save_no_treatment_flag,
+    save_manual_conferences,
 )
 from src.utils.timezone import brasilia_now, brasilia_now_iso
 
@@ -437,14 +438,15 @@ def backup_analysis_marks_to_github() -> dict[str, Any]:
     with _analysis_backup_lock:
         try:
             rows = read_sql(
-                f"select nf, analise_enviada_em, analise_respondida_em, sem_tratativa_origem, sem_tratativa_destino "
+                f"select nf, analise_enviada_em, analise_respondida_em, sem_tratativa_origem, sem_tratativa_destino, "
+                "conferencia_origem, motivo_conferencia_origem, conferencia_destino, motivo_conferencia_destino "
                 f"from {ANALYSIS_TABLE} order by nf, analise_enviada_em"
             )
             if rows.empty:
                 return {"status": "IGNORADO_BASE_VAZIA", "message": "Nenhuma marcacao encontrada; backup anterior preservado."}
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerow(["Nota fiscal", "Enviada em", "Respondida em", "Sem tratativa origem", "Sem tratativa destino"])
+            writer.writerow(["Nota fiscal", "Enviada em", "Respondida em", "Sem tratativa origem", "Sem tratativa destino", "Conferencia origem", "Motivo origem", "Conferencia destino", "Motivo destino"])
             writer.writerows(rows.fillna("").itertuples(index=False, name=None))
             _upload_bytes(
                 github_settings(),
@@ -471,10 +473,11 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
     reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
     legacy_fields = ["Nota fiscal", "Enviada em", "Respondida em"]
     expected = [*legacy_fields, "Sem tratativa origem", "Sem tratativa destino"]
-    if reader.fieldnames not in (legacy_fields, expected):
+    complete = [*expected, "Conferencia origem", "Motivo origem", "Conferencia destino", "Motivo destino"]
+    if reader.fieldnames not in (legacy_fields, expected, complete):
         raise ValueError("O backup das marcacoes tem colunas invalidas.")
 
-    backed_up: dict[str, tuple[str, str, int, int]] = {}
+    backed_up: dict[str, tuple[str, str, int, int, str, str, str, str]] = {}
     conflicting: set[str] = set()
     invalid = 0
     for row in reader:
@@ -483,8 +486,12 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
         replied_at = str(row["Respondida em"] or "").strip()
         origin = str(row.get("Sem tratativa origem") or "0").strip()
         destination = str(row.get("Sem tratativa destino") or "0").strip()
+        origin_verdict = str(row.get("Conferencia origem") or "").strip().upper()
+        destination_verdict = str(row.get("Conferencia destino") or "").strip().upper()
+        origin_reason = str(row.get("Motivo origem") or "").strip()
+        destination_reason = str(row.get("Motivo destino") or "").strip()
         try:
-            if not nf or (replied_at and not sent_at) or origin not in {"0", "1"} or destination not in {"0", "1"}:
+            if not nf or (replied_at and not sent_at) or origin not in {"0", "1"} or destination not in {"0", "1"} or origin_verdict not in {"", "A CONFERIR", "VALIDA", "INVALIDA"} or destination_verdict not in {"", "A CONFERIR", "VALIDA", "INVALIDA"}:
                 raise ValueError
             if sent_at:
                 datetime.fromisoformat(sent_at)
@@ -493,15 +500,16 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
         except ValueError:
             invalid += 1
             continue
-        dates = (sent_at, replied_at, int(origin), int(destination))
+        dates = (sent_at, replied_at, int(origin), int(destination), origin_verdict, origin_reason, destination_verdict, destination_reason)
         if nf in backed_up and backed_up[nf] != dates:
             conflicting.add(nf)
         backed_up[nf] = dates
 
     current = read_sql(f"""select c.lcte_id, c.nf, a.analise_enviada_em, a.analise_respondida_em,
-        a.sem_tratativa_origem, a.sem_tratativa_destino
+        a.sem_tratativa_origem, a.sem_tratativa_destino,
+        a.conferencia_origem, a.motivo_conferencia_origem, a.conferencia_destino, a.motivo_conferencia_destino
         from {CROSS_TABLE} c left join {ANALYSIS_TABLE} a on a.lcte_id = c.lcte_id""")
-    by_nf: dict[str, list[tuple[int, str, str, int, int]]] = {}
+    by_nf: dict[str, list[tuple[int, str, str, int, int, str, str, str, str]]] = {}
     for row in current.itertuples(index=False):
         nf = str(row.nf).strip() if pd.notna(row.nf) else ""
         if nf:
@@ -509,12 +517,15 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
             replied = str(row.analise_respondida_em) if pd.notna(row.analise_respondida_em) else ""
             origin = int(getattr(row, "sem_tratativa_origem", 0) or 0) if pd.notna(getattr(row, "sem_tratativa_origem", 0)) else 0
             destination = int(getattr(row, "sem_tratativa_destino", 0) or 0) if pd.notna(getattr(row, "sem_tratativa_destino", 0)) else 0
-            by_nf.setdefault(nf, []).append((int(row.lcte_id), sent, replied, origin, destination))
+            manual = tuple(str(getattr(row, col, "") or "") if pd.notna(getattr(row, col, "")) else ""
+                           for col in ("conferencia_origem", "motivo_conferencia_origem", "conferencia_destino", "motivo_conferencia_destino"))
+            by_nf.setdefault(nf, []).append((int(row.lcte_id), sent, replied, origin, destination, *manual))
 
     updates: list[tuple[int, str, str]] = []
     flag_updates: list[tuple[int, str]] = []
+    review_updates: list[tuple[int, str, str, str]] = []
     missing = ambiguous = already_present = 0
-    for nf, (sent_at, replied_at, origin, destination) in backed_up.items():
+    for nf, (sent_at, replied_at, origin, destination, origin_verdict, origin_reason, destination_verdict, destination_reason) in backed_up.items():
         if nf in conflicting:
             continue
         existing = by_nf.get(nf, [])
@@ -530,16 +541,21 @@ def restore_analysis_marks_from_github(usuario: str = "", dry_run: bool = True) 
                 flag_updates.append((lcte_id, "ORIGEM"))
             if destination and not existing[0][4]:
                 flag_updates.append((lcte_id, "DESTINO"))
-            if not any(item[0] == lcte_id for item in updates) and not any(item[0] == lcte_id for item in flag_updates):
+            for tipo, verdict, reason, old_verdict, old_reason in (("ORIGEM", origin_verdict, origin_reason, existing[0][5], existing[0][6]), ("DESTINO", destination_verdict, destination_reason, existing[0][7], existing[0][8])):
+                if (verdict or reason) and not old_verdict and not old_reason:
+                    review_updates.append((lcte_id, tipo, verdict, reason))
+            if not any(item[0] == lcte_id for item in updates) and not any(item[0] == lcte_id for item in flag_updates) and not any(item[0] == lcte_id for item in review_updates):
                 already_present += 1
 
     if not dry_run:
         restore_analysis_dates(updates, usuario)
         for lcte_id, tipo in flag_updates:
             save_no_treatment_flag(lcte_id, tipo, True, usuario)
-    restored = len({lcte_id for lcte_id, *_ in updates} | {lcte_id for lcte_id, _ in flag_updates}) if not dry_run else 0
+        save_manual_conferences(review_updates, usuario)
+    ready_ids = {lcte_id for lcte_id, *_ in updates} | {lcte_id for lcte_id, _ in flag_updates} | {lcte_id for lcte_id, *_ in review_updates}
+    restored = len(ready_ids) if not dry_run else 0
     return {
-        "backup": len(backed_up), "ready": len({lcte_id for lcte_id, *_ in updates} | {lcte_id for lcte_id, _ in flag_updates}), "restored": restored,
+        "backup": len(backed_up), "ready": len(ready_ids), "restored": restored,
         "missing": missing, "ambiguous": ambiguous + len(conflicting),
         "invalid": invalid, "already_present": already_present,
     }

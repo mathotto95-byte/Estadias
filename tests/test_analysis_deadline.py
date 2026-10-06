@@ -16,7 +16,7 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table, _conference_suggestion, _review_rows_from_excel, _apply_conference
 from estadias_app import github_backup
 
 
@@ -63,12 +63,51 @@ class AnalysisDeadlineTest(unittest.TestCase):
         self.assertTrue(stored[1])
 
     def test_separate_backup_contains_only_invoice_and_mark_dates(self):
-        rows = pd.DataFrame([{"nf": "12345", "analise_enviada_em": "2026-09-29T10:00:00", "analise_respondida_em": "", "sem_tratativa_origem": 1, "sem_tratativa_destino": 0}])
+        rows = pd.DataFrame([{"nf": "12345", "analise_enviada_em": "2026-09-29T10:00:00", "analise_respondida_em": "", "sem_tratativa_origem": 1, "sem_tratativa_destino": 0, "conferencia_origem": "INVALIDA", "motivo_conferencia_origem": "Prazo", "conferencia_destino": "", "motivo_conferencia_destino": ""}])
         with patch.object(github_backup, "github_backup_configured", return_value=True), patch.object(github_backup, "read_sql", return_value=rows), patch.object(github_backup, "github_settings", return_value={}), patch.object(github_backup, "_upload_bytes") as upload:
             result = github_backup.backup_analysis_marks_to_github()
         self.assertEqual(result["status"], "SUCESSO")
         self.assertEqual(upload.call_args.args[1], "backups/estadias_analises.csv")
-        self.assertEqual(upload.call_args.args[2].decode("utf-8-sig"), "Nota fiscal,Enviada em,Respondida em,Sem tratativa origem,Sem tratativa destino\r\n12345,2026-09-29T10:00:00,,1,0\r\n")
+        self.assertEqual(upload.call_args.args[2].decode("utf-8-sig"), "Nota fiscal,Enviada em,Respondida em,Sem tratativa origem,Sem tratativa destino,Conferencia origem,Motivo origem,Conferencia destino,Motivo destino\r\n12345,2026-09-29T10:00:00,,1,0,INVALIDA,Prazo,,\r\n")
+
+    def test_manual_verdict_preserves_other_location_and_analysis_dates(self):
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute(f"create table {repository.CROSS_TABLE} (lcte_id integer, nf text)")
+            conn.execute(f"create table {repository.ANALYSIS_TABLE} (lcte_id integer primary key, nf text, analise_enviada_em text, conferencia_origem text, conferencia_destino text, motivo_conferencia_origem text, motivo_conferencia_destino text, atualizado_em text, atualizado_por text)")
+            conn.execute(f"insert into {repository.CROSS_TABLE} values (1, '123')")
+            conn.execute(f"insert into {repository.ANALYSIS_TABLE} (lcte_id, nf, analise_enviada_em, conferencia_destino) values (1, '123', '2026-09-29T10:00:00', 'VALIDA')")
+            with patch.object(repository, "get_connection", return_value=conn), patch.object(repository, "registrar_status_evento"), patch.object(repository, "_invalidate_read_cache"):
+                repository.save_manual_conferences([(1, "ORIGEM", "INVALIDA", "Menos de 24 horas")], "tester")
+            result = conn.execute(f"select analise_enviada_em, conferencia_origem, conferencia_destino from {repository.ANALYSIS_TABLE}").fetchone()
+        self.assertEqual(result, ("2026-09-29T10:00:00", "INVALIDA", "VALIDA"))
+
+    def test_destination_deadline_suggestion_is_conservative(self):
+        base = {"Status Estadia": "ESTADIA", "Tipo": "DESTINO", "Data Limite": "19/09/2026", "Chegada Rastreador": "20/09/2026 10:00", "Saida Rastreador": "21/09/2026 08:00"}
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
+        base["Saida Rastreador"] = "21/09/2026 23:00"
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
+        base.update({"Chegada Rastreador": "18/09/2026 10:00", "Saida Rastreador": "19/09/2026 12:00"})
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
+        base["Data Limite"] = "09/05/2026"
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
+        # NF 391240 was manually validated despite arriving after the calendar limit.
+        base.update({"Data Limite": "06/09/2026", "Chegada Rastreador": "07/09/2026 08:13", "Saida Rastreador": "08/09/2026 10:07"})
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
+
+    def test_manual_verdict_takes_precedence_over_suggestion(self):
+        row = pd.DataFrame([{"Status Estadia": "ESTADIA", "Tipo": "DESTINO", "Data Limite": "19/09/2026",
+                             "Chegada Rastreador": "20/09/2026 10:00", "Saida Rastreador": "21/09/2026 08:00",
+                             "Conferência manual": "VALIDA", "Motivo manual": "Comprovante conferido"}])
+        result = _apply_conference(row)
+        self.assertEqual((result.at[0, "Conferência"], result.at[0, "Motivo conferência"]), ("VALIDA", "Comprovante conferido"))
+
+    def test_import_matches_trip_plate_and_note(self):
+        sheet = pd.DataFrame([[1, "", "", "", "VALIDA", "Comprovante", "ORIGEM", "ABC1234", "123"], [2, "", "", "", "INVALIDA", "", "DESTINO", "ERRADA", "456"], [3, "", "", "", "", "Verificar NF anterior", "DESTINO", "DEF1234", "789"]], columns=["lcte_id", "B", "C", "D", "E", "F", "Tipo", "Placa", "Notas"])
+        current = pd.DataFrame([{"lcte_id": 1, "Tipo": "ORIGEM", "Placa": "ABC1234", "Notas": "123"}, {"lcte_id": 2, "Tipo": "DESTINO", "Placa": "XYZ1234", "Notas": "456"}, {"lcte_id": 3, "Tipo": "DESTINO", "Placa": "DEF1234", "Notas": "789"}])
+        with patch("pandas.read_excel", return_value=sheet):
+            items, skipped = _review_rows_from_excel(None, current)
+        self.assertEqual(items, [(1, "ORIGEM", "VALIDA", "Comprovante"), (3, "DESTINO", "A CONFERIR", "Verificar NF anterior")])
+        self.assertEqual(skipped, 1)
 
     def test_no_treatment_is_per_location_and_can_be_undone(self):
         with sqlite3.connect(":memory:") as conn:
@@ -122,6 +161,17 @@ class AnalysisDeadlineTest(unittest.TestCase):
             result = github_backup.restore_analysis_marks_from_github("tester", dry_run=False)
         self.assertEqual((result["ready"], result["restored"]), (1, 1))
         save.assert_called_once_with(1, "ORIGEM", True, "tester")
+
+    def test_receive_manual_conference_without_overwriting_existing_verdict(self):
+        csv_backup = "Nota fiscal,Enviada em,Respondida em,Sem tratativa origem,Sem tratativa destino,Conferencia origem,Motivo origem,Conferencia destino,Motivo destino\n123,,,0,0,INVALIDA,Menos de 24 horas,VALIDA,Comprovante\n"
+        current = pd.DataFrame([{"lcte_id": 1, "nf": "123", "analise_enviada_em": "", "analise_respondida_em": "",
+                                 "sem_tratativa_origem": 0, "sem_tratativa_destino": 0,
+                                 "conferencia_origem": "", "motivo_conferencia_origem": "",
+                                 "conferencia_destino": "INVALIDA", "motivo_conferencia_destino": "Revisado"}])
+        with patch.object(github_backup, "github_backup_configured", return_value=True), patch.object(github_backup, "github_settings", return_value={}), patch.object(github_backup, "_download_text", return_value=csv_backup), patch.object(github_backup, "read_sql", return_value=current), patch.object(github_backup, "save_manual_conferences") as save:
+            result = github_backup.restore_analysis_marks_from_github("tester", dry_run=False)
+        self.assertEqual(result["restored"], 1)
+        save.assert_called_once_with([(1, "ORIGEM", "INVALIDA", "Menos de 24 horas")], "tester")
 
     def test_old_complete_backup_remains_valid(self):
         old_tables = {table: [] for table in github_backup.BACKUP_TABLES if table != repository.ANALYSIS_TABLE}
