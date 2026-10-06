@@ -6,6 +6,8 @@ from urllib.error import HTTPError, URLError
 import pandas as pd
 
 RULES = ["OTS 2", "OTS 3", "OTD 1", "OTD 2", "OTD 3"]
+SCHEDULE_FIELDS = ["Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL"]
+DISPLAY_FIELDS = [*SCHEDULE_FIELDS, "Dentro da Regra"]
 
 
 def clean(value):
@@ -76,6 +78,8 @@ def attach(cross, payload):
                     reason = "Dados do Estadias mudaram após a análise; sincronize e publique novamente"
                     break
         item = {k: v for k, v in local.items() if not k.startswith("_")}
+        item.update({field: clean(source.get(field)) if matching else "" for field in SCHEDULE_FIELDS})
+        item["Dentro da Regra"] = source["Atendeu todas as regras"] if matching else "Sem informação"
         item.update({r: source[r] if matching else "Sem informação" for r in RULES})
         item["Atendeu todas as regras"] = source["Atendeu todas as regras"] if matching else "Sem informação"
         item["Correspondência"] = "Exata" if matching else "Sem correspondência"
@@ -83,3 +87,26 @@ def attach(cross, payload):
         item["Motivo da classificação"] = source.get("Motivo da classificação", "") if matching else reason
         result.append(item)
     return pd.DataFrame(result)
+
+
+def enrich_summary(summary, cross, payload):
+    """Exibe resultados publicados, sem recalcular regras nem alterar viagens."""
+    result = summary.copy()
+    for field in DISPLAY_FIELDS:
+        result[field] = "Sem informação" if field == "Dentro da Regra" else ""
+    if result.empty or not payload:
+        return result
+    received = attach(cross, payload)
+    lookup = {(r["Nota Fiscal"], r["Placa"]): r for r in received.to_dict("records")}
+    for index, row in result.iterrows():
+        plate = re.sub(r"[^A-Z0-9]", "", clean(row.get("Placa")).upper())
+        notes = sorted({n.removesuffix(".0").lstrip("0") or "0" for n in re.split(r"[;,/|\s]+", clean(row.get("Notas"))) if n})
+        for field in DISPLAY_FIELDS:
+            fallback = "Sem informação" if field == "Dentro da Regra" else ""
+            values = [(nf, lookup.get((nf, plate), {}).get(field, fallback)) for nf in notes]
+            unique = {value for _, value in values}
+            if len(unique) == 1:
+                result.at[index, field] = next(iter(unique))
+            elif values:
+                result.at[index, field] = "; ".join(f"NF {nf}: {value or 'Sem informação'}" for nf, value in values)
+    return result

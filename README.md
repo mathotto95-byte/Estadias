@@ -41,7 +41,11 @@ matheus = "123456"
 O token do GitHub precisa ter acesso ao repositorio `mathotto95-byte/Estadias` e permissao `Contents: Read and write`.
 O app e publicado da branch `main`; os backups ficam na branch `backup-data` para nao reiniciar o Streamlit a cada gravacao. `GITHUB_BRANCH = "main"` antigo pode ser removido dos Secrets.
 
-## Backup
+## Resultados do PerformanceRW
+
+Na tela **Estadias**, clique em **Atualizar PerformanceRW** após publicar a análise no Performance. O painel e os arquivos Excel passam a mostrar **Previsão de Carga**, **Agendamento de Carga**, **Data Limite**, **Agenda GFL** e **Dentro da Regra**. Os mesmos campos ficam disponíveis na consulta **PerformanceRW**. A associação reutiliza NF + placa e verifica se as chegadas continuam iguais às da análise publicada. Sem correspondência segura, os prazos ficam vazios e o status é Sem informação. Quando uma viagem possui várias NFs com valores diferentes, a célula identifica o valor de cada NF; não há recálculo das regras no Estadias.
+
+## Arquivos de backup
 
 O backup GitHub grava dois arquivos JSON:
 

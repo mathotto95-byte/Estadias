@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from estadias_app import performance as performance_results
+if not hasattr(performance_results, "enrich_summary"):
+    from importlib import reload
+    reload(performance_results)
 
 from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
@@ -2079,7 +2083,15 @@ def render_cross_page(usuario: str) -> None:
     else:
         cross = read_cross(200000)
 
-    summary = _build_cross_summary_table(cross)
+    from estadias_app.performance import receive, enrich_summary, DISPLAY_FIELDS
+    if st.button("Atualizar PerformanceRW", key="cross_update_performance"):
+        try:
+            st.session_state["performance_result"] = receive()
+        except ValueError as exc:
+            st.error(str(exc))
+    performance_payload = st.session_state.get("performance_result")
+    st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else "Publique a análise no Performance e clique em Atualizar PerformanceRW para receber os prazos e o atendimento das regras.")
+    summary = enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),
@@ -2106,7 +2118,7 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise"]
+    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
