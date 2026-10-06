@@ -1480,10 +1480,26 @@ def _status_estadia_from_minutes(tracker_minutes: float | None, estadia_minutes:
 
 
 def _conference_suggestion(row: pd.Series) -> tuple[str, str]:
-    if row.get("Status Estadia") != "ESTADIA" or row.get("Tipo") != "DESTINO":
+    if row.get("Status Estadia") != "ESTADIA":
         return "A CONFERIR", "Sem regra automatica conclusiva"
     arrival = pd.to_datetime(row.get("Chegada Rastreador"), dayfirst=True, errors="coerce")
     departure = pd.to_datetime(row.get("Saida Rastreador"), dayfirst=True, errors="coerce")
+    if row.get("Tipo") == "ORIGEM":
+        appointment = pd.to_datetime(row.get("Agendamento de Carga"), dayfirst=True, errors="coerce")
+        invoice = pd.to_datetime(row.get("Data Emissao NF"), dayfirst=True, errors="coerce")
+        if any(pd.isna(value) for value in (arrival, departure, appointment, invoice)):
+            return "A CONFERIR", "Agendamento, emissao da NF ou posicoes insuficientes"
+        if abs((appointment.normalize() - arrival.normalize()).days) > 30:
+            return "A CONFERIR", "Agendamento distante da viagem; conferir formato da data"
+        if not arrival <= invoice <= departure:
+            return "A CONFERIR", "Emissao da NF fora da permanencia na origem"
+        if departure - appointment < timedelta(hours=24):
+            return "INVALIDA", "Menos de 24 horas entre agendamento de carga e saida GPS"
+        if arrival > appointment:
+            return "A CONFERIR", "Chegada apos o agendamento; conferir atraso operacional"
+        return "VALIDA", "NF emitida durante a permanencia; ao menos 24 horas desde o agendamento"
+    if row.get("Tipo") != "DESTINO":
+        return "A CONFERIR", "Tipo de permanencia nao identificado"
     limit = pd.to_datetime(row.get("Data Limite"), dayfirst=True, errors="coerce")
     if any(pd.isna(value) for value in (arrival, departure, limit)):
         return "A CONFERIR", "Data limite ou posicoes insuficientes"
@@ -1502,37 +1518,6 @@ def _apply_conference(summary: pd.DataFrame) -> pd.DataFrame:
     result["Conferência"] = [str(row.get("Conferência manual") or verdict) for (_, row), (verdict, _) in zip(result.iterrows(), suggestions)]
     result["Motivo conferência"] = [str(row.get("Motivo manual") or reason) for (_, row), (_, reason) in zip(result.iterrows(), suggestions)]
     return result
-
-
-def _review_rows_from_excel(uploaded: object, summary: pd.DataFrame) -> tuple[list[tuple[int, str, str, str]], int]:
-    sheet = pd.read_excel(uploaded, dtype=str).fillna("")
-    required = {"lcte_id", "Tipo", "Placa", "Notas"}
-    if not required.issubset(sheet.columns) or sheet.shape[1] < 6:
-        raise ValueError("Planilha de conferencia sem lcte_id, Tipo, Placa, Notas e colunas E/F.")
-    current = {(str(row["lcte_id"]), str(row["Tipo"]), str(row["Placa"]), str(row["Notas"]))
-               for _, row in summary.iterrows()}
-    items: dict[tuple[int, str], tuple[int, str, str, str]] = {}
-    skipped = 0
-    for _, row in sheet.iterrows():
-        verdict = str(row.iloc[4]).strip().upper()
-        reason = str(row.iloc[5]).strip()
-        if verdict not in {"", "VALIDA", "INVALIDA"}:
-            skipped += 1
-            continue
-        if not verdict and not reason:
-            continue
-        try:
-            lcte_id = int(float(row["lcte_id"]))
-        except (TypeError, ValueError):
-            skipped += 1
-            continue
-        tipo = str(row["Tipo"]).strip().upper()
-        key = (str(lcte_id), tipo, str(row["Placa"]).strip(), str(row["Notas"]).strip())
-        if key not in current:
-            skipped += 1
-            continue
-        items[(lcte_id, tipo)] = (lcte_id, tipo, verdict or "A CONFERIR", reason)
-    return list(items.values()), skipped
 
 
 def _analysis_deadline_status(sent_at: object, replied_at: object, now: datetime | None = None) -> tuple[str, str]:
@@ -1858,6 +1843,8 @@ def _apply_validation_card(df: pd.DataFrame, card: str) -> pd.DataFrame:
 def _apply_situation_card(df: pd.DataFrame, card: str) -> pd.DataFrame:
     if card == "ESTADIA":
         return df[df["Status Estadia"].fillna("").astype(str).eq("ESTADIA")]
+    if card in {"VALIDA", "INVALIDA"}:
+        return df[df["Conferência"].fillna("").astype(str).eq(card)]
     if card in {"PENDENTE", "CONCLUIDO"}:
         return df[df["Status"].fillna("").astype(str).eq(card)]
     return df
@@ -1915,11 +1902,13 @@ def _render_validation_cards(df: pd.DataFrame) -> str:
 def _render_situation_cards(df: pd.DataFrame) -> str:
     active = str(st.session_state.get("estadias_situation_card") or "")
     cards = [
-        ("ESTADIA", "ESTADIAS", int(df["Status Estadia"].fillna("").astype(str).eq("ESTADIA").sum()) if not df.empty else 0),
+        ("ESTADIA", "ESTADIAS (GPS)", int(df["Status Estadia"].fillna("").astype(str).eq("ESTADIA").sum()) if not df.empty else 0),
+        ("VALIDA", "VALIDADAS", int(df["Conferência"].fillna("").astype(str).eq("VALIDA").sum()) if not df.empty else 0),
+        ("INVALIDA", "INVALIDADAS", int(df["Conferência"].fillna("").astype(str).eq("INVALIDA").sum()) if not df.empty else 0),
         ("PENDENTE", "PENDENTES", int(df["Status"].fillna("").astype(str).eq("PENDENTE").sum()) if not df.empty else 0),
         ("CONCLUIDO", "CONCLUIDOS", int(df["Status"].fillna("").astype(str).eq("CONCLUIDO").sum()) if not df.empty else 0),
     ]
-    cols = st.columns(3)
+    cols = st.columns(5)
     for idx, (key, label, count) in enumerate(cards):
         cols[idx].button(
             f"{label}\n{count}",
@@ -2159,26 +2148,21 @@ def render_cross_page(usuario: str) -> None:
         cross = read_cross(200000)
 
     from estadias_app.performance import receive, enrich_summary, DISPLAY_FIELDS
-    if st.button("Atualizar PerformanceRW", key="cross_update_performance"):
+    if not st.session_state.get("performance_load_attempted"):
+        st.session_state["performance_load_attempted"] = True
         try:
             st.session_state["performance_result"] = receive()
         except ValueError as exc:
+            st.session_state["performance_load_error"] = str(exc)
+    if st.button("Atualizar PerformanceRW", key="cross_update_performance"):
+        try:
+            st.session_state["performance_result"] = receive()
+            st.session_state.pop("performance_load_error", None)
+        except ValueError as exc:
             st.error(str(exc))
     performance_payload = st.session_state.get("performance_result")
-    st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else "Publique a análise no Performance e clique em Atualizar PerformanceRW para receber os prazos e o atendimento das regras.")
+    st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else st.session_state.get("performance_load_error", "Sem dados de prazos do PerformanceRW."))
     summary = _apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload))
-    with st.expander("Importar conferencia manual da planilha"):
-        review_file = st.file_uploader("Planilha exportada do painel com pareceres nas colunas E e F", type="xlsx", key="estadias_conferencia_arquivo")
-        if review_file is not None:
-            try:
-                review_items, skipped = _review_rows_from_excel(review_file, summary)
-                st.caption(f"Pareceres localizados: {len(review_items)}. Sem correspondencia exata com viagem, placa e nota: {skipped}.")
-                if st.button("Importar pareceres", disabled=not review_items, key="estadias_conferencia_importar"):
-                    save_manual_conferences(review_items, usuario)
-                    st.success(f"{len(review_items)} pareceres salvos.")
-                    st.rerun()
-            except ValueError as exc:
-                st.error(str(exc))
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),

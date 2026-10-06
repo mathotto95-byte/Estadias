@@ -16,7 +16,7 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table, _conference_suggestion, _review_rows_from_excel, _apply_conference
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table, _conference_suggestion, _apply_conference
 from estadias_app import github_backup
 
 
@@ -94,20 +94,35 @@ class AnalysisDeadlineTest(unittest.TestCase):
         base.update({"Data Limite": "06/09/2026", "Chegada Rastreador": "07/09/2026 08:13", "Saida Rastreador": "08/09/2026 10:07"})
         self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
 
+    def test_origin_uses_appointment_to_gps_departure_with_invoice_evidence(self):
+        base = {"Status Estadia": "ESTADIA", "Tipo": "ORIGEM", "Agendamento de Carga": "09/09/2026 20:00",
+                "Chegada Rastreador": "08/09/2026 14:19", "Saida Rastreador": "09/09/2026 15:10", "Data Emissao NF": "09/09/2026 14:18"}
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
+        # NF 391240 was corrected by the confirmed appointment-to-departure rule.
+        base.update({"Agendamento de Carga": "05/09/2026 05:00", "Chegada Rastreador": "04/09/2026 12:19", "Saida Rastreador": "05/09/2026 14:29", "Data Emissao NF": "05/09/2026 12:19"})
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
+        base.update({"Agendamento de Carga": "17/09/2026 22:00", "Chegada Rastreador": "17/09/2026 05:33", "Saida Rastreador": "18/09/2026 12:42", "Data Emissao NF": "18/09/2026 05:32"})
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
+        corrected_origins = [
+            ("17/09/2026 11:00", "16/09/2026 13:11", "17/09/2026 14:28", "17/09/2026 13:11"),
+            ("03/09/2026 17:30", "02/09/2026 18:49", "04/09/2026 06:11", "03/09/2026 18:46"),
+            ("23/09/2026 12:00", "23/09/2026 07:01", "24/09/2026 07:31", "24/09/2026 05:50"),
+        ]
+        for appointment, arrival, departure, invoice in corrected_origins:
+            base.update({"Agendamento de Carga": appointment, "Chegada Rastreador": arrival,
+                         "Saida Rastreador": departure, "Data Emissao NF": invoice})
+            self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
+        base.update({"Agendamento de Carga": "15/09/2026 14:00", "Chegada Rastreador": "15/09/2026 14:00", "Saida Rastreador": "16/09/2026 15:00", "Data Emissao NF": "16/09/2026 13:46"})
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "VALIDA")
+        base.update({"Agendamento de Carga": "15/09/2026 14:00", "Chegada Rastreador": "16/09/2026 09:42", "Saida Rastreador": "17/09/2026 10:23", "Data Emissao NF": "17/09/2026 09:18"})
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
+
     def test_manual_verdict_takes_precedence_over_suggestion(self):
         row = pd.DataFrame([{"Status Estadia": "ESTADIA", "Tipo": "DESTINO", "Data Limite": "19/09/2026",
                              "Chegada Rastreador": "20/09/2026 10:00", "Saida Rastreador": "21/09/2026 08:00",
                              "Conferência manual": "VALIDA", "Motivo manual": "Comprovante conferido"}])
         result = _apply_conference(row)
         self.assertEqual((result.at[0, "Conferência"], result.at[0, "Motivo conferência"]), ("VALIDA", "Comprovante conferido"))
-
-    def test_import_matches_trip_plate_and_note(self):
-        sheet = pd.DataFrame([[1, "", "", "", "VALIDA", "Comprovante", "ORIGEM", "ABC1234", "123"], [2, "", "", "", "INVALIDA", "", "DESTINO", "ERRADA", "456"], [3, "", "", "", "", "Verificar NF anterior", "DESTINO", "DEF1234", "789"]], columns=["lcte_id", "B", "C", "D", "E", "F", "Tipo", "Placa", "Notas"])
-        current = pd.DataFrame([{"lcte_id": 1, "Tipo": "ORIGEM", "Placa": "ABC1234", "Notas": "123"}, {"lcte_id": 2, "Tipo": "DESTINO", "Placa": "XYZ1234", "Notas": "456"}, {"lcte_id": 3, "Tipo": "DESTINO", "Placa": "DEF1234", "Notas": "789"}])
-        with patch("pandas.read_excel", return_value=sheet):
-            items, skipped = _review_rows_from_excel(None, current)
-        self.assertEqual(items, [(1, "ORIGEM", "VALIDA", "Comprovante"), (3, "DESTINO", "A CONFERIR", "Verificar NF anterior")])
-        self.assertEqual(skipped, 1)
 
     def test_no_treatment_is_per_location_and_can_be_undone(self):
         with sqlite3.connect(":memory:") as conn:
