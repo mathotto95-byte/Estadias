@@ -57,9 +57,12 @@ LARGE_SESSION_EXPORT_KEYS = (
     "estadias_pdf_export_preparado",
 )
 
+# Bump when migrations change so Streamlit does not reuse an old initialization.
+DATABASE_SCHEMA_VERSION = 2
+
 
 @st.cache_resource(show_spinner=False)
-def initialize_database() -> None:
+def initialize_database(schema_version: int) -> None:
     ensure_directories()
     with get_connection() as conn:
         create_modular_tables(conn)
@@ -384,7 +387,7 @@ def main() -> None:
     _apply_theme()
     _clear_large_session_exports()
     username = _require_login()
-    initialize_database()
+    initialize_database(DATABASE_SCHEMA_VERSION)
     _restore_from_github_once()
     start_analysis_backup_scheduler()
     if st.sidebar.button("Atualizar pagina", use_container_width=True):

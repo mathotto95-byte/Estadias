@@ -43,6 +43,17 @@ class AnalysisDeadlineTest(unittest.TestCase):
         self.assertEqual(dates, "2026-09-29T10:00:00")
         self.assertEqual(legacy, "")
 
+    def test_existing_analysis_table_gains_conference_columns(self):
+        with sqlite3.connect(":memory:") as raw:
+            raw.row_factory = sqlite3.Row
+            raw.execute(f"create table {repository.ANALYSIS_TABLE} (lcte_id integer primary key, nf text, analise_enviada_em text, analise_respondida_em text)")
+            raw.execute(f"insert into {repository.ANALYSIS_TABLE} values (1, '123', '2026-09-29T10:00:00', '')")
+            create_modular_tables(DbConnection(raw, "sqlite"))
+            columns = {row[1] for row in raw.execute(f"pragma table_info({repository.ANALYSIS_TABLE})")}
+            saved = raw.execute(f"select nf, analise_enviada_em from {repository.ANALYSIS_TABLE} where lcte_id = 1").fetchone()
+        self.assertTrue({"conferencia_origem", "conferencia_destino", "motivo_conferencia_origem", "motivo_conferencia_destino"}.issubset(columns))
+        self.assertEqual(tuple(saved), ("123", "2026-09-29T10:00:00"))
+
     def test_fifteen_day_deadline_and_response(self):
         sent = "2026-09-29T10:00:00"
         self.assertEqual(_analysis_deadline_status(sent, "", datetime(2026, 10, 14, 9)), ("14/10/2026 10:00", "Aguardando resposta"))
