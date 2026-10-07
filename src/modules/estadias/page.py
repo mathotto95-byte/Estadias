@@ -848,6 +848,7 @@ PANEL_DEFAULT_COLUMNS = {
         "Respondida em",
         "Sem tratativa",
         "Conferência",
+        "Motivo não validada",
         "Motivo conferência",
         "Prazo resposta",
         "Situação análise",
@@ -1481,42 +1482,51 @@ def _status_estadia_from_minutes(tracker_minutes: float | None, estadia_minutes:
 
 def _conference_suggestion(row: pd.Series) -> tuple[str, str]:
     if row.get("Status Estadia") != "ESTADIA":
-        return "A CONFERIR", "Sem regra automatica conclusiva"
+        return "A CONFERIR", "Permanência GPS sem excedente de estadia confirmado"
     arrival = pd.to_datetime(row.get("Chegada Rastreador"), dayfirst=True, errors="coerce")
     departure = pd.to_datetime(row.get("Saida Rastreador"), dayfirst=True, errors="coerce")
     if row.get("Tipo") == "ORIGEM":
         appointment = pd.to_datetime(row.get("Agendamento de Carga"), dayfirst=True, errors="coerce")
         invoice = pd.to_datetime(row.get("Data Emissao NF"), dayfirst=True, errors="coerce")
-        if any(pd.isna(value) for value in (arrival, departure, appointment, invoice)):
-            return "A CONFERIR", "Agendamento, emissao da NF ou posicoes insuficientes"
+        missing = [label for label, value in (("chegada GPS", arrival), ("saída GPS", departure), ("agendamento de carga", appointment), ("emissão da NF", invoice)) if pd.isna(value)]
+        if missing:
+            return "A CONFERIR", "Falta " + ", ".join(missing) + " para validar a origem"
         if abs((appointment.normalize() - arrival.normalize()).days) > 30:
-            return "A CONFERIR", "Agendamento distante da viagem; conferir formato da data"
+            return "A CONFERIR", f"Agendamento {appointment:%d/%m/%Y} distante {abs((appointment.normalize() - arrival.normalize()).days)} dias da chegada GPS; conferir data"
         if not arrival <= invoice <= departure:
-            return "A CONFERIR", "Emissao da NF fora da permanencia na origem"
-        if departure - appointment < timedelta(hours=24):
-            return "INVALIDA", "Menos de 24 horas entre agendamento de carga e saida GPS"
+            return "A CONFERIR", f"Emissão da NF {invoice:%d/%m %H:%M} fora da permanência GPS {arrival:%d/%m %H:%M} a {departure:%d/%m %H:%M}; viagem não confirmada"
+        eligible = departure - appointment
+        if eligible < timedelta(hours=24):
+            counted = _format_hhmm(max(eligible.total_seconds() / 60, 0))
+            missing_time = _format_hhmm((timedelta(hours=24) - eligible).total_seconds() / 60)
+            return "INVALIDA", f"Origem: {counted} do agendamento {appointment:%d/%m %H:%M} à saída GPS {departure:%d/%m %H:%M}; faltam {missing_time} para 24h"
         if arrival > appointment:
-            return "A CONFERIR", "Chegada apos o agendamento; conferir atraso operacional"
-        return "VALIDA", "NF emitida durante a permanencia; ao menos 24 horas desde o agendamento"
+            return "A CONFERIR", f"Chegada GPS {arrival:%d/%m %H:%M} após agendamento {appointment:%d/%m %H:%M}; não contar período antes da chegada sem revisar atraso"
+        return "VALIDA", "NF emitida durante a permanência; ao menos 24h do agendamento à saída GPS"
     if row.get("Tipo") != "DESTINO":
-        return "A CONFERIR", "Tipo de permanencia nao identificado"
+        return "A CONFERIR", "Tipo de permanência não identificado"
     limit = pd.to_datetime(row.get("Data Limite"), dayfirst=True, errors="coerce")
-    if any(pd.isna(value) for value in (arrival, departure, limit)):
-        return "A CONFERIR", "Data limite ou posicoes insuficientes"
+    missing = [label for label, value in (("chegada GPS", arrival), ("saída GPS", departure), ("data limite", limit)) if pd.isna(value)]
+    if missing:
+        return "A CONFERIR", "Falta " + ", ".join(missing) + " para validar o destino"
     # A date-only limit means the whole calendar day, not midnight as a hard arrival cutoff.
     if abs((limit.normalize() - arrival.normalize()).days) > 30:
-        return "A CONFERIR", "Data limite distante da viagem; conferir formato da data"
+        return "A CONFERIR", f"Data limite {limit:%d/%m/%Y} distante {abs((limit.normalize() - arrival.normalize()).days)} dias da chegada GPS; conferir data"
     eligible_start = max(arrival, limit.normalize())
-    if departure - eligible_start < timedelta(hours=24):
-        return "INVALIDA", "Menos de 24 horas apos o inicio elegivel no destino"
-    return "A CONFERIR", "Prazo compativel; verificar comprovantes e demais regras"
+    eligible = departure - eligible_start
+    if eligible < timedelta(hours=24):
+        counted = _format_hhmm(max(eligible.total_seconds() / 60, 0))
+        missing_time = _format_hhmm((timedelta(hours=24) - eligible).total_seconds() / 60)
+        return "INVALIDA", f"Destino: {counted} desde {eligible_start:%d/%m %H:%M} até saída GPS {departure:%d/%m %H:%M}; faltam {missing_time} para 24h"
+    return "A CONFERIR", f"Destino: {_format_hhmm(eligible.total_seconds() / 60)} elegíveis; prazo passou, mas comprovante/descarga ainda não confirmados"
 
 
 def _apply_conference(summary: pd.DataFrame) -> pd.DataFrame:
     result = summary.copy()
     suggestions = result.apply(_conference_suggestion, axis=1) if not result.empty else []
     result["Conferência"] = [str(row.get("Conferência manual") or verdict) for (_, row), (verdict, _) in zip(result.iterrows(), suggestions)]
-    result["Motivo conferência"] = [str(row.get("Motivo manual") or reason) for (_, row), (_, reason) in zip(result.iterrows(), suggestions)]
+    result["Motivo não validada"] = [reason if str(row.get("Conferência manual") or verdict) != "VALIDA" else "" for (_, row), (verdict, reason) in zip(result.iterrows(), suggestions)]
+    result["Motivo conferência"] = result.get("Motivo manual", pd.Series("", index=result.index)).fillna("").astype(str)
     return result
 
 
@@ -2191,7 +2201,7 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Tipo", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Sem tratativa", "Conferência", "Motivo conferência", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
+    mandatory = ["lcte_id", "Tipo", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Sem tratativa", "Conferência", "Motivo não validada", "Motivo conferência", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
@@ -2296,6 +2306,7 @@ def render_cross_page(usuario: str) -> None:
             "Resposta recebida": st.column_config.CheckboxColumn("Resposta recebida"),
             "Sem tratativa": st.column_config.CheckboxColumn("Sem tratativa", help="Retira esta linha da lista ativa sem apagar a viagem."),
             "Conferência": st.column_config.SelectboxColumn("Conferência", options=["A CONFERIR", "VALIDA", "INVALIDA"], required=True),
+            "Motivo não validada": st.column_config.TextColumn("Motivo não validada", width="large"),
             "Motivo conferência": st.column_config.TextColumn("Motivo conferência"),
             "lcte_id": st.column_config.NumberColumn("ID viagem", disabled=True),
         },

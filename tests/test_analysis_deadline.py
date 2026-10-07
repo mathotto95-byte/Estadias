@@ -134,6 +134,25 @@ class AnalysisDeadlineTest(unittest.TestCase):
                              "Conferência manual": "VALIDA", "Motivo manual": "Comprovante conferido"}])
         result = _apply_conference(row)
         self.assertEqual((result.at[0, "Conferência"], result.at[0, "Motivo conferência"]), ("VALIDA", "Comprovante conferido"))
+        self.assertEqual(result.at[0, "Motivo não validada"], "")
+
+    def test_gps_stay_explains_invalid_and_pending_conference(self):
+        rows = pd.DataFrame([
+            {"Status Estadia": "ESTADIA", "Tipo": "ORIGEM", "Agendamento de Carga": "05/09/2026 05:00",
+             "Chegada Rastreador": "04/09/2026 12:19", "Saida Rastreador": "05/09/2026 14:29",
+             "Data Emissao NF": "05/09/2026 12:19"},
+            {"Status Estadia": "ESTADIA", "Tipo": "DESTINO", "Chegada Rastreador": "20/09/2026 10:00",
+             "Saida Rastreador": "21/09/2026 23:00", "Data Limite": "19/09/2026"},
+            {"Status Estadia": "ESTADIA", "Tipo": "DESTINO", "Chegada Rastreador": "20/09/2026 10:00",
+             "Saida Rastreador": "21/09/2026 23:00", "Data Limite": ""},
+        ])
+        result = _apply_conference(rows)
+        self.assertEqual(result["Conferência"].tolist(), ["INVALIDA", "A CONFERIR", "A CONFERIR"])
+        self.assertIn("09:29", result.at[0, "Motivo não validada"])
+        self.assertIn("14:31", result.at[0, "Motivo não validada"])
+        self.assertIn("37:00", result.at[1, "Motivo não validada"])
+        self.assertIn("data limite", result.at[2, "Motivo não validada"])
+        self.assertTrue(result["Motivo conferência"].eq("").all())
 
     def test_no_treatment_is_per_location_and_can_be_undone(self):
         with sqlite3.connect(":memory:") as conn:
