@@ -871,6 +871,16 @@ PANEL_DEFAULT_COLUMNS = {
         "Motivo",
         "Concluir",
     ],
+    "VIAGENS": [
+        "Notas", "Data Emissao NF", "Placa", "motorista", "Origem", "Destino",
+        "Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL",
+        "OTS 2", "OTS 3", "OTD 1", "OTD 2", "OTD 3",
+        "Chegada Rastreador Carga", "Saida Rastreador Carga", "Tempo Rastreador Carga",
+        "Chegada Rastreador Descarga", "Saida Rastreador Descarga", "Tempo Rastreador Descarga",
+        "Status Estadia Carga", "Status Estadia Descarga",
+        "Conferência Carga", "Conferência Descarga",
+        "Relatorio CONTROL", "Relatorio Rastreador",
+    ],
     "ESTADIAS": [
         "id",
         "cte",
@@ -1787,6 +1797,31 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
+def _build_trip_summary_table(lines: pd.DataFrame) -> pd.DataFrame:
+    if lines.empty:
+        return lines.copy()
+    side_fields = [
+        "Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência",
+        "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador",
+        "Chegada Control", "Saida Control", "Tempo Control", "Diferenca", "Motivo",
+    ]
+    rows = []
+    for _, group in lines.groupby("lcte_id", sort=False):
+        row = group.iloc[0].to_dict()
+        for tipo, suffix in (("ORIGEM", "Carga"), ("DESTINO", "Descarga")):
+            matches = group[group["Tipo"].eq(tipo)]
+            source = matches.iloc[0] if not matches.empty else {}
+            for field in side_fields:
+                row[f"{field} {suffix}"] = source.get(field, False if field == "Sem tratativa" else "")
+        row["Sem tratativa"] = bool(row["Sem tratativa Carga"] and row["Sem tratativa Descarga"])
+        row["Concluir"] = "Concluir" if group["Concluir"].fillna("").astype(str).ne("").any() else ""
+        row["Status"] = next((status for status in ("ESTADIA", "PENDENTE", "CONCLUIDO") if group["Status"].eq(status).any()), row["Status"])
+        row["Estadia"] = "Estadia" if group["Status Estadia"].eq("ESTADIA").any() else row["Estadia"]
+        rows.append(row)
+    result = pd.DataFrame(rows)
+    return result.drop(columns=[*side_fields, "Tipo", "Conferência manual", "Motivo manual"], errors="ignore")
+
+
 def _toggle_simple_card(state_key: str, value: str) -> None:
     st.session_state[state_key] = "" if st.session_state.get(state_key) == value else value
 
@@ -1802,7 +1837,14 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
     if filtered.empty:
         return filtered
     treatment = str(filters.get("tratativa") or "Ativos")
-    if treatment == "Ativos":
+    if "Sem tratativa Carga" in filtered.columns:
+        carga = filtered["Sem tratativa Carga"].fillna(False).astype(bool)
+        descarga = filtered["Sem tratativa Descarga"].fillna(False).astype(bool)
+        if treatment == "Ativos":
+            filtered = filtered[~(carga & descarga)]
+        elif treatment == "Sem tratativa":
+            filtered = filtered[carga | descarga]
+    elif treatment == "Ativos":
         filtered = filtered[~filtered["Sem tratativa"].fillna(False).astype(bool)]
     elif treatment == "Sem tratativa":
         filtered = filtered[filtered["Sem tratativa"].fillna(False).astype(bool)]
@@ -1838,7 +1880,10 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
         if value.upper() == "TODOS":
             value = ""
         if value:
-            filtered = filtered[filtered[column].fillna("").astype(str).str.upper().eq(value.upper())]
+            if column in filtered.columns:
+                filtered = filtered[filtered[column].fillna("").astype(str).str.upper().eq(value.upper())]
+            elif column in {"Status Estadia", "Conferência"}:
+                filtered = filtered[filtered[f"{column} Carga"].fillna("").astype(str).str.upper().eq(value.upper()) | filtered[f"{column} Descarga"].fillna("").astype(str).str.upper().eq(value.upper())]
     return filtered
 
 
@@ -1851,6 +1896,9 @@ def _apply_validation_card(df: pd.DataFrame, card: str) -> pd.DataFrame:
 
 
 def _apply_situation_card(df: pd.DataFrame, card: str) -> pd.DataFrame:
+    if "Status Estadia Carga" in df.columns and card in {"ESTADIA", "VALIDA", "INVALIDA"}:
+        field = "Status Estadia" if card == "ESTADIA" else "Conferência"
+        return df[df[f"{field} Carga"].fillna("").eq(card) | df[f"{field} Descarga"].fillna("").eq(card)]
     if card == "ESTADIA":
         return df[df["Status Estadia"].fillna("").astype(str).eq("ESTADIA")]
     if card in {"VALIDA", "INVALIDA"}:
@@ -1871,14 +1919,13 @@ def _render_summary_filters(df: pd.DataFrame) -> dict[str, object]:
         "placa": col_c.text_input("Placa", key="estadias_resumo_placa"),
         "nota": col_d.text_input("Nota fiscal", key="estadias_resumo_nota"),
     }
-    col_e, col_f, col_g, col_h, col_i = st.columns(5)
+    col_e, col_f, col_g, col_h = st.columns(4)
     filters.update(
         {
             "origem": col_e.text_input("Origem", key="estadias_resumo_origem"),
             "destino": col_f.text_input("Destino", key="estadias_resumo_destino"),
-            "tipo": col_g.selectbox("Tipo", ["", "ORIGEM", "DESTINO"], key="estadias_resumo_tipo"),
-            "status": col_h.selectbox("Status", ["", "ESTADIA", "PENDENTE", "CONCLUIDO", "SEM ESTADIA"], key="estadias_resumo_status"),
-            "status_estadia": col_i.selectbox("Status Estadia", ["Todos", "ESTADIA", "SEM ESTADIA", "PENDENTE"], key="estadias_resumo_status_estadia"),
+            "status": col_g.selectbox("Status", ["", "ESTADIA", "PENDENTE", "CONCLUIDO", "SEM ESTADIA"], key="estadias_resumo_status"),
+            "status_estadia": col_h.selectbox("Status Estadia", ["Todos", "ESTADIA", "SEM ESTADIA", "PENDENTE"], key="estadias_resumo_status_estadia"),
         }
     )
     col_analise, col_tratativa, col_conferencia = st.columns(3)
@@ -1911,10 +1958,16 @@ def _render_validation_cards(df: pd.DataFrame) -> str:
 
 def _render_situation_cards(df: pd.DataFrame) -> str:
     active = str(st.session_state.get("estadias_situation_card") or "")
+    def count_match(field: str, value: str) -> int:
+        if df.empty:
+            return 0
+        if f"{field} Carga" in df.columns:
+            return int((df[f"{field} Carga"].fillna("").eq(value) | df[f"{field} Descarga"].fillna("").eq(value)).sum())
+        return int(df[field].fillna("").eq(value).sum())
     cards = [
-        ("ESTADIA", "ESTADIAS (GPS)", int(df["Status Estadia"].fillna("").astype(str).eq("ESTADIA").sum()) if not df.empty else 0),
-        ("VALIDA", "VALIDADAS", int(df["Conferência"].fillna("").astype(str).eq("VALIDA").sum()) if not df.empty else 0),
-        ("INVALIDA", "INVALIDADAS", int(df["Conferência"].fillna("").astype(str).eq("INVALIDA").sum()) if not df.empty else 0),
+        ("ESTADIA", "VIAGENS COM ESTADIA (GPS)", count_match("Status Estadia", "ESTADIA")),
+        ("VALIDA", "VIAGENS VALIDADAS", count_match("Conferência", "VALIDA")),
+        ("INVALIDA", "VIAGENS INVALIDADAS", count_match("Conferência", "INVALIDA")),
         ("PENDENTE", "PENDENTES", int(df["Status"].fillna("").astype(str).eq("PENDENTE").sum()) if not df.empty else 0),
         ("CONCLUIDO", "CONCLUIDOS", int(df["Status"].fillna("").astype(str).eq("CONCLUIDO").sum()) if not df.empty else 0),
     ]
@@ -1970,9 +2023,9 @@ def _render_quick_conclusion(summary: pd.DataFrame, usuario: str) -> None:
 def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
     if summary.empty:
         return
-    with st.expander("Detalhamento da linha", expanded=False):
+    with st.expander("Detalhamento da viagem", expanded=False):
         options = [
-            f"{int(row.get('lcte_id') or 0)} | {row.get('Tipo') or '-'} | Nota {row.get('Notas') or '-'} | {row.get('Placa') or '-'}"
+            f"{int(row.get('lcte_id') or 0)} | Nota {row.get('Notas') or '-'} | {row.get('Placa') or '-'}"
             for _, row in summary.head(1000).iterrows()
         ]
         selected = st.selectbox("Linha", options, key="estadias_resumo_detalhe")
@@ -2157,7 +2210,7 @@ def render_cross_page(usuario: str) -> None:
     else:
         cross = read_cross(200000)
 
-    from estadias_app.performance import receive, enrich_summary, DISPLAY_FIELDS
+    from estadias_app.performance import receive, enrich_summary, DISPLAY_FIELDS, RULES
     if not st.session_state.get("performance_load_attempted"):
         st.session_state["performance_load_attempted"] = True
         try:
@@ -2172,7 +2225,7 @@ def render_cross_page(usuario: str) -> None:
             st.error(str(exc))
     performance_payload = st.session_state.get("performance_result")
     st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else st.session_state.get("performance_load_error", "Sem dados de prazos do PerformanceRW."))
-    summary = _apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload))
+    summary = _build_trip_summary_table(_apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)))
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),
@@ -2200,8 +2253,10 @@ def render_cross_page(usuario: str) -> None:
 
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
-        visible_columns = _configured_columns("RESUMO", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Tipo", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Sem tratativa", "Conferência", "Motivo não validada", "Motivo conferência", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS]
+        visible_columns = _configured_columns("VIAGENS", filtered if not filtered.empty else summary, usuario)
+    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS, *RULES]
+    for suffix in ("Carga", "Descarga"):
+        mandatory.extend(f"{field} {suffix}" for field in ("Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência", "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador", "Chegada Control", "Saida Control", "Tempo Control"))
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
@@ -2287,10 +2342,10 @@ def render_cross_page(usuario: str) -> None:
     else:
         st.info("Nenhuma estadia filtrada possui periodo valido para gerar PDF de posicoes.")
 
-    editable = {"Enviada para análise", "Resposta recebida", "Sem tratativa", "Conferência", "Motivo conferência"}
+    editable = {"Enviada para análise", "Resposta recebida", *(f"{field} {suffix}" for suffix in ("Carga", "Descarga") for field in ("Sem tratativa", "Conferência", "Motivo conferência"))}
     editor_table = table.head(500)
     editor_key = "estadias_analise_editor_" + hashlib.sha1(
-        filtered.loc[editor_table.index, ["lcte_id", "Tipo", "Enviada para análise", "Resposta recebida", "Sem tratativa", "Conferência", "Motivo conferência"]].to_csv(index=False).encode("utf-8")
+        filtered.loc[editor_table.index, ["lcte_id", "Enviada para análise", "Resposta recebida", *(f"{field} {suffix}" for suffix in ("Carga", "Descarga") for field in ("Sem tratativa", "Conferência", "Motivo conferência"))]].to_csv(index=False).encode("utf-8")
     ).hexdigest()[:12]
     if len(table) > len(editor_table):
         st.caption(f"Exibindo {len(editor_table)} de {len(table)} linhas para edição. Refine os filtros para localizar outras viagens.")
@@ -2304,10 +2359,9 @@ def render_cross_page(usuario: str) -> None:
         column_config={
             "Enviada para análise": st.column_config.CheckboxColumn("Enviada para análise"),
             "Resposta recebida": st.column_config.CheckboxColumn("Resposta recebida"),
-            "Sem tratativa": st.column_config.CheckboxColumn("Sem tratativa", help="Retira esta linha da lista ativa sem apagar a viagem."),
-            "Conferência": st.column_config.SelectboxColumn("Conferência", options=["A CONFERIR", "VALIDA", "INVALIDA"], required=True),
-            "Motivo não validada": st.column_config.TextColumn("Motivo não validada", width="large"),
-            "Motivo conferência": st.column_config.TextColumn("Motivo conferência"),
+            **{f"Sem tratativa {side}": st.column_config.CheckboxColumn(f"Sem tratativa {side}") for side in ("Carga", "Descarga")},
+            **{f"Conferência {side}": st.column_config.SelectboxColumn(f"Conferência {side}", options=["A CONFERIR", "VALIDA", "INVALIDA"], required=True) for side in ("Carga", "Descarga")},
+            **{f"Motivo conferência {side}": st.column_config.TextColumn(f"Motivo conferência {side}") for side in ("Carga", "Descarga")},
             "lcte_id": st.column_config.NumberColumn("ID viagem", disabled=True),
         },
         key=editor_key,
@@ -2322,16 +2376,17 @@ def render_cross_page(usuario: str) -> None:
             lcte_id = int(editor_table.at[index, "lcte_id"])
             if sent != bool(editor_table.at[index, "Enviada para análise"]) or replied != bool(editor_table.at[index, "Resposta recebida"]):
                 updates[lcte_id] = (sent, replied)
-            marked = bool(edited_table.at[index, "Sem tratativa"])
-            if marked != bool(editor_table.at[index, "Sem tratativa"]):
-                no_treatment_updates[(lcte_id, str(editor_table.at[index, "Tipo"]))] = marked
-            verdict = str(edited_table.at[index, "Conferência"] or "").strip().upper()
-            reason = str(edited_table.at[index, "Motivo conferência"] or "").strip()
-            if verdict not in {"A CONFERIR", "VALIDA", "INVALIDA"}:
-                st.error(f"Parecer invalido na viagem {lcte_id}.")
-                return
-            if verdict != str(editor_table.at[index, "Conferência"]) or reason != str(editor_table.at[index, "Motivo conferência"]):
-                conference_updates.append((lcte_id, str(editor_table.at[index, "Tipo"]), verdict, reason))
+            for tipo, side in (("ORIGEM", "Carga"), ("DESTINO", "Descarga")):
+                marked = bool(edited_table.at[index, f"Sem tratativa {side}"])
+                if marked != bool(editor_table.at[index, f"Sem tratativa {side}"]):
+                    no_treatment_updates[(lcte_id, tipo)] = marked
+                verdict = str(edited_table.at[index, f"Conferência {side}"] or "").strip().upper()
+                reason = str(edited_table.at[index, f"Motivo conferência {side}"] or "").strip()
+                if verdict not in {"A CONFERIR", "VALIDA", "INVALIDA"}:
+                    st.error(f"Parecer invalido na viagem {lcte_id} ({side}).")
+                    return
+                if verdict != str(editor_table.at[index, f"Conferência {side}"]) or reason != str(editor_table.at[index, f"Motivo conferência {side}"]):
+                    conference_updates.append((lcte_id, tipo, verdict, reason))
         if any(replied and not sent for sent, replied in updates.values()):
             st.error("Marque o envio para análise antes de registrar uma resposta.")
         elif not updates and not no_treatment_updates and not conference_updates:

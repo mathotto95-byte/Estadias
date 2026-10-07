@@ -16,11 +16,23 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table, _conference_suggestion, _apply_conference
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table, _build_trip_summary_table, _conference_suggestion, _apply_conference, _apply_situation_card
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_trip_summary_keeps_both_stays_on_one_line(self):
+        lines = pd.DataFrame([
+            {"lcte_id": 1, "Tipo": "ORIGEM", "Notas": "123", "Placa": "ABC1234", "Status": "ESTADIA", "Estadia": "Estadia", "Status Estadia": "ESTADIA", "Conferência": "VALIDA", "Motivo não validada": "", "Motivo conferência": "", "Sem tratativa": False, "Chegada Rastreador": "01/10/2026 10:00", "Saida Rastreador": "02/10/2026 10:00", "Tempo Rastreador": "24:00", "Chegada Control": "", "Saida Control": "", "Tempo Control": "", "Diferenca": "", "Motivo": "", "Concluir": "Concluir", "data_inicio_viagem_referencia": "2026-10-01"},
+            {"lcte_id": 1, "Tipo": "DESTINO", "Notas": "123", "Placa": "ABC1234", "Status": "PENDENTE", "Estadia": "Pendente", "Status Estadia": "PENDENTE", "Conferência": "INVALIDA", "Motivo não validada": "Abaixo de 24h", "Motivo conferência": "", "Sem tratativa": True, "Chegada Rastreador": "03/10/2026 10:00", "Saida Rastreador": "03/10/2026 12:00", "Tempo Rastreador": "02:00", "Chegada Control": "", "Saida Control": "", "Tempo Control": "", "Diferenca": "", "Motivo": "", "Concluir": "Concluir", "data_inicio_viagem_referencia": "2026-10-01"},
+        ])
+        trips = _build_trip_summary_table(lines)
+        self.assertEqual(len(trips), 1)
+        self.assertEqual(trips.iloc[0]["Chegada Rastreador Carga"], "01/10/2026 10:00")
+        self.assertEqual(trips.iloc[0]["Chegada Rastreador Descarga"], "03/10/2026 10:00")
+        self.assertEqual(len(_apply_situation_card(trips, "INVALIDA")), 1)
+        self.assertEqual(len(_apply_summary_filters(trips, {"tratativa": "Ativos", "conferencia": "VALIDA"})), 1)
+
     def test_write_marks_backup_check_without_database_scan(self):
         state = {}
         with patch.object(repository.st, "cache_data", create=True) as cache, patch.object(repository.st, "session_state", state, create=True):

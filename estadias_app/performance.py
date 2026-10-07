@@ -92,7 +92,7 @@ def attach(cross, payload):
 def enrich_summary(summary, cross, payload):
     """Exibe resultados publicados, sem recalcular regras nem alterar viagens."""
     result = summary.copy()
-    for field in DISPLAY_FIELDS:
+    for field in [*DISPLAY_FIELDS, *RULES]:
         result[field] = "Sem informação" if field == "Dentro da Regra" else ""
     if result.empty or not payload:
         return result
@@ -101,7 +101,7 @@ def enrich_summary(summary, cross, payload):
     for index, row in result.iterrows():
         plate = re.sub(r"[^A-Z0-9]", "", clean(row.get("Placa")).upper())
         notes = sorted({n.removesuffix(".0").lstrip("0") or "0" for n in re.split(r"[;,/|\s]+", clean(row.get("Notas"))) if n})
-        for field in DISPLAY_FIELDS:
+        for field in [*DISPLAY_FIELDS, *RULES]:
             fallback = "Sem informação" if field == "Dentro da Regra" else ""
             values = [(nf, lookup.get((nf, plate), {}).get(field, fallback)) for nf in notes]
             unique = {value for _, value in values}
