@@ -1528,7 +1528,7 @@ def _conference_suggestion(row: pd.Series) -> tuple[str, str]:
         counted = _format_hhmm(max(eligible.total_seconds() / 60, 0))
         missing_time = _format_hhmm((timedelta(hours=24) - eligible).total_seconds() / 60)
         return "INVALIDA", f"Destino: {counted} desde {eligible_start:%d/%m %H:%M} até saída GPS {departure:%d/%m %H:%M}; faltam {missing_time} para 24h"
-    return "A CONFERIR", f"Destino: {_format_hhmm(eligible.total_seconds() / 60)} elegíveis; prazo passou, mas comprovante/descarga ainda não confirmados"
+    return "VALIDA", f"Destino: {_format_hhmm(eligible.total_seconds() / 60)} elegíveis; ao menos 24h entre início elegível e saída GPS"
 
 
 def _apply_conference(summary: pd.DataFrame) -> pd.DataFrame:

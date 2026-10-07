@@ -104,18 +104,18 @@ class AnalysisDeadlineTest(unittest.TestCase):
             result = conn.execute(f"select analise_enviada_em, conferencia_origem, conferencia_destino from {repository.ANALYSIS_TABLE}").fetchone()
         self.assertEqual(result, ("2026-09-29T10:00:00", "INVALIDA", "VALIDA"))
 
-    def test_destination_deadline_suggestion_is_conservative(self):
+    def test_destination_deadline_suggestion_validates_after_24_hours(self):
         base = {"Status Estadia": "ESTADIA", "Tipo": "DESTINO", "Data Limite": "19/09/2026", "Chegada Rastreador": "20/09/2026 10:00", "Saida Rastreador": "21/09/2026 08:00"}
         self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
         base["Saida Rastreador"] = "21/09/2026 23:00"
-        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "VALIDA")
         base.update({"Chegada Rastreador": "18/09/2026 10:00", "Saida Rastreador": "19/09/2026 12:00"})
         self.assertEqual(_conference_suggestion(pd.Series(base))[0], "INVALIDA")
         base["Data Limite"] = "09/05/2026"
         self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
-        # NF 391240 was manually validated despite arriving after the calendar limit.
+        # Arrival after the calendar limit starts the eligible period at GPS arrival.
         base.update({"Data Limite": "06/09/2026", "Chegada Rastreador": "07/09/2026 08:13", "Saida Rastreador": "08/09/2026 10:07"})
-        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "A CONFERIR")
+        self.assertEqual(_conference_suggestion(pd.Series(base))[0], "VALIDA")
 
     def test_origin_uses_appointment_to_gps_departure_with_invoice_evidence(self):
         base = {"Status Estadia": "ESTADIA", "Tipo": "ORIGEM", "Agendamento de Carga": "09/09/2026 20:00",
@@ -159,10 +159,10 @@ class AnalysisDeadlineTest(unittest.TestCase):
              "Saida Rastreador": "21/09/2026 23:00", "Data Limite": ""},
         ])
         result = _apply_conference(rows)
-        self.assertEqual(result["Conferência"].tolist(), ["INVALIDA", "A CONFERIR", "A CONFERIR"])
+        self.assertEqual(result["Conferência"].tolist(), ["INVALIDA", "VALIDA", "A CONFERIR"])
         self.assertIn("09:29", result.at[0, "Motivo não validada"])
         self.assertIn("14:31", result.at[0, "Motivo não validada"])
-        self.assertIn("37:00", result.at[1, "Motivo não validada"])
+        self.assertEqual(result.at[1, "Motivo não validada"], "")
         self.assertIn("data limite", result.at[2, "Motivo não validada"])
         self.assertTrue(result["Motivo conferência"].eq("").all())
 
