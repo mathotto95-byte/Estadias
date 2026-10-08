@@ -2,10 +2,13 @@ import sqlite3
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
+from contextlib import closing
 from datetime import datetime
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -14,13 +17,51 @@ streamlit.cache_data = lambda **kwargs: lambda func: func
 sys.modules.setdefault("streamlit", streamlit)
 
 from src.modules.estadias import repository
-from src.database.connection import DbConnection
+from src.database.connection import DatabaseConfig, DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _gps_permanence_report
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _configured_columns, _gps_permanence_report
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_save_model_button_persists_selected_columns(self):
+        ui = MagicMock()
+        ui.session_state = {}
+        apply_button, save_button = MagicMock(), MagicMock()
+        ui.columns.return_value = (apply_button, save_button)
+        save_button.form_submit_button.return_value = True
+
+        def select_columns(_label, _options, key):
+            ui.session_state[key] = ["Placa", "Origem"]
+            return ui.session_state[key]
+
+        ui.multiselect.side_effect = select_columns
+        with patch("src.modules.estadias.page.st", ui), patch("src.modules.estadias.page.read_preferencia_colunas", return_value=[]) as read, patch("src.modules.estadias.page.save_preferencia_colunas") as save:
+            selected = _configured_columns("VIAGENS", pd.DataFrame(columns=["Placa", "Origem", "Destino"]), "matheus")
+        self.assertEqual(selected, ["Placa", "Origem"])
+        read.assert_called_once_with("matheus", "VIAGENS")
+        save.assert_called_once_with("matheus", "VIAGENS", ["Placa", "Origem"])
+        self.assertIn("estadias_cross_columns_VIAGENS_matheus", ui.session_state)
+
+    def test_column_preference_saves_per_user_and_rolls_back_on_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "preferences.sqlite"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.execute("create table mod_estadias_preferencias_colunas (id integer primary key autoincrement, usuario text, painel text, colunas_json text, updated_at text)")
+            config = DatabaseConfig(db_type="sqlite", sqlite_path=path)
+            with patch("src.database.connection.get_database_config", return_value=config):
+                repository.save_preferencia_colunas("matheus", "VIAGENS", ["Placa", "Origem"])
+                self.assertEqual(repository.read_preferencia_colunas("matheus", "VIAGENS"), ["Placa", "Origem"])
+                self.assertEqual(repository.read_preferencia_colunas("outro", "VIAGENS"), [])
+                repository.save_preferencia_colunas("matheus", "VIAGENS", ["Destino"])
+                self.assertEqual(repository.read_preferencia_colunas("matheus", "VIAGENS"), ["Destino"])
+                with closing(sqlite3.connect(path)) as conn:
+                    self.assertEqual(conn.execute("select count(*) from mod_estadias_preferencias_colunas").fetchone()[0], 1)
+                    conn.execute("create trigger prevent_preference_insert before insert on mod_estadias_preferencias_colunas begin select raise(abort, 'blocked'); end")
+                with self.assertRaises(sqlite3.IntegrityError):
+                    repository.save_preferencia_colunas("matheus", "VIAGENS", ["Notas"])
+                self.assertEqual(repository.read_preferencia_colunas("matheus", "VIAGENS"), ["Destino"])
+
     def test_gps_report_keeps_loading_and_unloading_on_one_filtered_row(self):
         trips = pd.DataFrame([{"lcte_id": 2, "Notas": "456", "Placa": "ABC1234", "Chegada Rastreador Carga": "01/10/2026 08:00", "Tempo Rastreador Carga": "26:00", "Chegada Rastreador Descarga": "03/10/2026 09:00", "Tempo Rastreador Descarga": "28:00"}])
         cross = pd.DataFrame([{"lcte_id": 1, "pontos_origem": 99}, {"lcte_id": 2, "pontos_origem": 12, "pontos_destino": 16, "referencias_visitadas_origem": "Patio A", "franquia_carga_min": 1440}])

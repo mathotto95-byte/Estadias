@@ -1051,17 +1051,15 @@ def save_preferencia_colunas(usuario: str, painel: str, colunas: list[str]) -> N
             """,
             (usuario, painel),
         )
-    insert_rows(
-        PREFERENCIAS_COLUNAS_TABLE,
-        [
-            {
-                "usuario": usuario,
-                "painel": painel,
-                "colunas_json": json.dumps(colunas, ensure_ascii=False),
-                "updated_at": now,
-            }
-        ],
-    )
+        conn.execute(
+            """
+            insert into mod_estadias_preferencias_colunas
+                (usuario, painel, colunas_json, updated_at)
+            values (?, ?, ?, ?)
+            """,
+            (usuario, painel, json.dumps(colunas, ensure_ascii=False), now),
+        )
+    _invalidate_read_cache()
 
 
 def save_config(df: pd.DataFrame, usuario: str) -> int:

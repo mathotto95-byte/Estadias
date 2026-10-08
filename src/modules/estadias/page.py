@@ -1218,7 +1218,7 @@ def _configured_columns(panel: str, df: pd.DataFrame, usuario: str) -> list[str]
     defaults = [column for column in PANEL_DEFAULT_COLUMNS.get(panel, options[:18]) if column in options]
     if not defaults:
         defaults = options[:18]
-    widget_key = f"estadias_cross_columns_{panel}"
+    widget_key = f"estadias_cross_columns_{panel}_{usuario}"
     if widget_key not in st.session_state:
         saved = [column for column in read_preferencia_colunas(usuario, panel) if column in options]
         st.session_state[widget_key] = saved or defaults
