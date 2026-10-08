@@ -1791,6 +1791,12 @@ def _gps_verification_table(trips: pd.DataFrame) -> pd.DataFrame:
     result.loc[gps & origin & ~destination, "Situação GPS"] = "Só carga"
     result.loc[gps & ~origin & destination, "Situação GPS"] = "Só descarga"
     result.loc[gps & ~origin & ~destination, "Situação GPS"] = "GPS sem local identificado"
+    carga = pd.to_numeric(result["tempo_origem_min"], errors="coerce")
+    descarga = pd.to_numeric(result["tempo_destino_min"], errors="coerce")
+    total = carga.fillna(0).where(origin, 0) + descarga.fillna(0).where(destination, 0)
+    complete = (origin | destination) & (~origin | carga.notna()) & (~destination | descarga.notna())
+    result["Tempo total GPS (min)"] = total.where(complete)
+    result["Tempo total GPS"] = result["Tempo total GPS (min)"].map(_format_hhmm)
     saved = pd.to_numeric(result["posicoes_carga"], errors="coerce").fillna(0) + pd.to_numeric(result["posicoes_descarga"], errors="coerce").fillna(0)
     result["Evidência disponível"] = "Sem posições salvas"
     result.loc[result["resultado_id"].notna(), "Evidência disponível"] = "Somente resultado"
@@ -1822,6 +1828,7 @@ def render_gps_verification_page() -> None:
     nf = col_nf.text_input("Nota fiscal", key="gps_verification_nf").strip()
     year = col_year.selectbox("Ano", ["Todos", *years], key="gps_verification_year")
     month = col_month.selectbox("Mês", ["Todos", *range(1, 13)], format_func=lambda value: value if value == "Todos" else f"{value:02d}", key="gps_verification_month")
+    above_24h = st.checkbox("Tempo parado GPS maior que 24 horas", key="gps_verification_above_24h")
     filtered = trips
     if plate:
         filtered = filtered[filtered["placa_norm"].fillna("").astype(str).str.contains(plate, regex=False)]
@@ -1831,6 +1838,8 @@ def render_gps_verification_page() -> None:
         filtered = filtered[dates.loc[filtered.index].dt.year.eq(year)]
     if month != "Todos":
         filtered = filtered[dates.loc[filtered.index].dt.month.eq(month)]
+    if above_24h:
+        filtered = filtered[filtered["Tempo total GPS (min)"].gt(24 * 60)]
 
     categories = ["Todas", "Carga e descarga", "Só carga", "Só descarga", "GPS sem local identificado", "Sem GPS no cálculo", "Não calculada"]
     cols = st.columns(len(categories))
@@ -1849,6 +1858,7 @@ def render_gps_verification_page() -> None:
         "qtd_registros_rastreador": "Pontos na janela", "primeira_data_rastreador": "Primeira posição", "ultima_data_rastreador": "Última posição",
         "chegada_origem": "Chegada carga", "saida_origem": "Saída carga", "tempo_origem_min": "Tempo carga (min)", "posicoes_carga": "Posições salvas carga",
         "chegada_destino": "Chegada descarga", "saida_destino": "Saída descarga", "tempo_destino_min": "Tempo descarga (min)", "posicoes_descarga": "Posições salvas descarga",
+        "Tempo total GPS": "Tempo parado GPS (h:mm)", "Tempo total GPS (min)": "Tempo parado GPS (min)",
         "motivo_falha": "Motivo", "atualizado_em": "Cálculo atualizado em", "lcte_id": "ID viagem",
     }
     report = filtered[list(columns)].rename(columns=columns).copy()

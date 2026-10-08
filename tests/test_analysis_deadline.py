@@ -46,13 +46,16 @@ class AnalysisDeadlineTest(unittest.TestCase):
 
     def test_gps_verification_distinguishes_partial_locations(self):
         rows = pd.DataFrame([
-            {"resultado_id": 1, "encontrou_rastreador": 1, "encontrou_origem": 1, "encontrou_destino": 0, "posicoes_carga": 2, "posicoes_descarga": 0},
-            {"resultado_id": 2, "encontrou_rastreador": 1, "encontrou_origem": 0, "encontrou_destino": 1, "posicoes_carga": 0, "posicoes_descarga": 1},
-            {"resultado_id": 3, "encontrou_rastreador": 1, "encontrou_origem": 0, "encontrou_destino": 0, "posicoes_carga": 0, "posicoes_descarga": 0},
+            {"resultado_id": 1, "encontrou_rastreador": 1, "encontrou_origem": 1, "encontrou_destino": 0, "tempo_origem_min": 1440, "tempo_destino_min": None, "posicoes_carga": 2, "posicoes_descarga": 0},
+            {"resultado_id": 2, "encontrou_rastreador": 1, "encontrou_origem": 0, "encontrou_destino": 1, "tempo_origem_min": None, "tempo_destino_min": 1441, "posicoes_carga": 0, "posicoes_descarga": 1},
+            {"resultado_id": 3, "encontrou_rastreador": 1, "encontrou_origem": 0, "encontrou_destino": 0, "tempo_origem_min": None, "tempo_destino_min": None, "posicoes_carga": 0, "posicoes_descarga": 0},
         ])
         verified = _gps_verification_table(rows)
         self.assertEqual(verified["Situação GPS"].tolist(), ["Só carga", "Só descarga", "GPS sem local identificado"])
         self.assertEqual(verified["Evidência disponível"].tolist(), ["Posições resumidas salvas", "Posições resumidas salvas", "Somente resultado"])
+        self.assertEqual(verified["Tempo total GPS"].tolist()[:2], ["24:00", "24:01"])
+        self.assertTrue(pd.isna(verified.iloc[2]["Tempo total GPS (min)"]))
+        self.assertEqual(verified[verified["Tempo total GPS (min)"].gt(1440)].index.tolist(), [1])
 
     def test_save_model_button_persists_selected_columns(self):
         ui = MagicMock()
