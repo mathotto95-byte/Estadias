@@ -1,9 +1,20 @@
 import unittest
+import json
+from unittest.mock import patch, MagicMock
 import pandas as pd
-from estadias_app.performance import attach, validate, RULES, enrich_summary, SCHEDULE_FIELDS
+from estadias_app.performance import attach, validate, receive, RULES, enrich_summary, SCHEDULE_FIELDS
 
 
 class ReceiveTests(unittest.TestCase):
+    def test_public_receive_does_not_use_estadias_repository_token(self):
+        payload = {"schema": "performance_results_v1", "analyzed_at": "2026-10-08T10:00:00-03:00", "sources": {}, "rows": []}
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+        with patch("estadias_app.performance.urlopen", return_value=response) as fetch, patch("estadias_app.github_backup._download_text") as authenticated, patch("streamlit.secrets", {}, create=True):
+            self.assertEqual(receive(), payload)
+        self.assertEqual(fetch.call_count, 1)
+        authenticated.assert_not_called()
+
     def test_exact_missing_stale_and_duplicates(self):
         row = {"Nota Fiscal": "1", "Placa": "ABC1D23", "Atendeu todas as regras": "Sim", "Correspondência Estadias": "Exata", "Chegada na Origem": "2026-10-01 10:00", "Chegada no Destino": "", **dict.fromkeys(RULES, "Dentro do prazo")}
         row.update(dict(zip(SCHEDULE_FIELDS, ["01/10/2026", "01/10/2026 10:00", "02/10/2026", "02/10/2026 12:00"])))

@@ -2224,7 +2224,10 @@ def render_cross_page(usuario: str) -> None:
         except ValueError as exc:
             st.error(str(exc))
     performance_payload = st.session_state.get("performance_result")
-    st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else st.session_state.get("performance_load_error", "Sem dados de prazos do PerformanceRW."))
+    if performance_payload:
+        st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}")
+    else:
+        st.error(st.session_state.get("performance_load_error", "Resultado PerformanceRW não carregado. Clique em Atualizar PerformanceRW."))
     summary = _build_trip_summary_table(_apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)))
     if performance_payload and not summary.empty:
         matched = int(summary["Correspondência PerformanceRW"].eq("Exata").sum())

@@ -2,6 +2,7 @@
 import json
 import re
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
@@ -25,14 +26,24 @@ def _same_arrival(remote, current):
 def receive():
     import streamlit as st
     from estadias_app.github_backup import github_settings, _download_text
-    settings = github_settings()
-    settings.update(repository="mathotto95-byte/Performance", branch="main")
+    token = ""
     try:
-        settings["token"] = st.secrets.get("performance_results", {}).get("token") or settings["token"]
+        token = st.secrets.get("performance_results", {}).get("token") or ""
     except FileNotFoundError:
         pass
     try:
-        payload = json.loads(_download_text(settings, "backups/performance_latest.json"))
+        request = Request("https://api.github.com/repos/mathotto95-byte/Performance/contents/backups/performance_latest.json?ref=main",
+                          headers={"Accept": "application/vnd.github.raw+json", "User-Agent": "Estadias"})
+        try:
+            with urlopen(request, timeout=30) as response:
+                raw = response.read().decode("utf-8")
+        except HTTPError as exc:
+            if exc.code not in {401, 403, 404} or not token:
+                raise
+            settings = github_settings()
+            settings.update(repository="mathotto95-byte/Performance", branch="main", token=token)
+            raw = _download_text(settings, "backups/performance_latest.json")
+        payload = json.loads(raw)
     except (HTTPError, URLError, TimeoutError, ValueError):
         raise ValueError("Não foi possível receber a análise. Publique no Performance e confira o token de leitura do repositório Performance.") from None
     validate(payload)
