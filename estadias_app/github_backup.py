@@ -22,8 +22,6 @@ from src.modules.estadias.repository import (
     AUDITORIA_TABLE,
     CONFIG_TABLE,
     CONCLUSOES_TABLE,
-    CONTROL_NORMALIZED_TABLE,
-    CONTROL_ORIGINAL_TABLE,
     CROSS_TABLE,
     ESTADIA_POSITIONS_TABLE,
     LCTE_NORMALIZED_TABLE,
@@ -45,8 +43,6 @@ from src.utils.timezone import brasilia_now, brasilia_now_iso
 ESTADIAS_TABLES = [
     LCTE_ORIGINAL_TABLE,
     LCTE_NORMALIZED_TABLE,
-    CONTROL_ORIGINAL_TABLE,
-    CONTROL_NORMALIZED_TABLE,
     RASTREADOR_ORIGINAL_TABLE,
     RASTREADOR_NORMALIZED_TABLE,
     ESTADIA_POSITIONS_TABLE,
@@ -76,7 +72,6 @@ BACKUP_TABLES = [
 
 IMPORT_BACKUP_TABLES = [
     LCTE_NORMALIZED_TABLE,
-    CONTROL_NORMALIZED_TABLE,
 ]
 
 # Os dois arquivos fixos substituem o historico de snapshots avulsos.
@@ -424,7 +419,7 @@ def import_backup_payload() -> dict[str, Any]:
         "generated_at": brasilia_now_iso(),
         "records": {table: len(values) for table, values in rows.items()},
         "tables": rows,
-        "observacao": "Bases normalizadas LCTE e CONTROL para permitir recalculo posterior.",
+        "observacao": "Base normalizada LCTE para permitir recalculo posterior.",
     }
 
 

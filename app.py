@@ -291,7 +291,7 @@ def render_backup_page() -> None:
 
     st.divider()
     st.subheader("Limpar residuos das importacoes")
-    st.warning("Remove somente LCTE, CONTROL, RASTREADOR e logs de importacao. Os resultados calculados, conclusoes, auditoria e configuracoes ficam preservados.")
+    st.warning("Remove somente LCTE, RASTREADOR e logs de importacao. Os resultados calculados, conclusoes, auditoria e configuracoes ficam preservados.")
     confirm_residue = st.text_input("Digite LIMPAR RESIDUOS para liberar", key="confirm_clear_import_residues")
     if st.button(
         "Limpar residuos das importacoes",

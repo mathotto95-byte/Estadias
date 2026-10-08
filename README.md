@@ -50,7 +50,7 @@ Na tela **Estadias**, clique em **Atualizar PerformanceRW** ap√≥s publicar a an√
 O backup GitHub grava dois arquivos JSON:
 
 - Resultado do painel: resultados, conclusoes, auditoria e configuracoes.
-- Importacoes normalizadas: LCTE, CONTROL e RASTREADOR, para permitir recalcular com regras novas depois.
+- Importacoes normalizadas: LCTE e RASTREADOR, para permitir recalcular com regras novas depois.
 
 O backup automatico salva o JSON de resultado para nao travar o app em alteracoes pequenas. O botao manual `Enviar backup para GitHub` salva resultado e importacoes.
 

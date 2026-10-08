@@ -7,7 +7,7 @@ from src.database.connection import get_connection
 from src.database.schema import adapt_sql, ensure_columns
 
 
-ESTADIAS_IMPORT_TYPES = ("LCTE_IPIRANGA", "CONTROL", "RASTREADOR_PLACA")
+ESTADIAS_IMPORT_TYPES = ("LCTE_IPIRANGA", "RASTREADOR_PLACA")
 
 
 def _json_default(value: Any) -> str:
@@ -24,8 +24,6 @@ def modular_log_tables() -> tuple[str, ...]:
 
 def modular_tables() -> tuple[str, ...]:
     return (
-        "mod_estadias_control_original",
-        "mod_estadias_control_normalizada",
         "mod_estadias_lcte_original",
         "mod_estadias_lcte_normalizada",
         "mod_estadias_rastreador_original",
@@ -154,50 +152,6 @@ def create_modular_tables(conn) -> None:
                 longitude_destino real,
                 observacao text,
                 monitoramento text,
-                dados_json text,
-                created_at text,
-                updated_at text
-            )
-            """,
-        )
-    )
-    conn.execute(adapt_sql(conn, "create table if not exists mod_estadias_control_original (id integer primary key autoincrement, lote_importacao text, arquivo_origem text, usuario_importacao text, data_hora_importacao text, hash_arquivo text, numero_linha integer, dados_json text, created_at text, updated_at text)"))
-    conn.execute(
-        adapt_sql(
-            conn,
-            """
-            create table if not exists mod_estadias_control_normalizada (
-                id integer primary key autoincrement,
-                lote_importacao text,
-                arquivo_origem text,
-                usuario_importacao text,
-                data_hora_importacao text,
-                hash_arquivo text,
-                numero_linha integer,
-                placa text,
-                placa_norm text,
-                motorista text,
-                cliente text,
-                razao_social text,
-                local_origem text,
-                local_destino text,
-                local_evento text,
-                data_inicio text,
-                hora_inicio text,
-                data_fim text,
-                hora_fim text,
-                data_hora_inicio text,
-                data_hora_fim text,
-                tipo_evento text,
-                status text,
-                observacao text,
-                valor_estadia real,
-                tempo_total real,
-                numero_documento text,
-                cte text,
-                nf text,
-                pedido text,
-                viagem text,
                 dados_json text,
                 created_at text,
                 updated_at text
@@ -963,7 +917,6 @@ def create_modular_tables(conn) -> None:
     _create_index_if_columns(conn, "mod_estadias_posicoes_resultado", "idx_estadias_posicoes_lcte_tipo", ["lcte_id", "tipo_estadia"])
     _create_index_if_columns(conn, "mod_estadias_posicoes_resultado", "idx_estadias_posicoes_placa_data", ["placa_norm", "data_hora"])
     _create_index_if_columns(conn, "mod_estadias_lcte_normalizada", "idx_estadias_lcte_placa_data", ["placa_norm", "data_operacao"])
-    _create_index_if_columns(conn, "mod_estadias_control_normalizada", "idx_estadias_control_placa_data", ["placa_norm", "data_hora_inicio"])
 
 
 def initialize_modular_database() -> None:

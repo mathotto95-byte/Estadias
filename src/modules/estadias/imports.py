@@ -24,8 +24,6 @@ from src.modules.estadias.normalizers import (
     row_value,
 )
 from src.modules.estadias.repository import (
-    CONTROL_NORMALIZED_TABLE,
-    CONTROL_ORIGINAL_TABLE,
     LCTE_NORMALIZED_TABLE,
     LCTE_ORIGINAL_TABLE,
     RASTREADOR_NORMALIZED_TABLE,
@@ -37,42 +35,6 @@ from src.modules.estadias.repository import (
 from src.utils.timezone import brasilia_now, brasilia_now_iso
 
 
-CONTROL_ALIASES = {
-    "placa": ["placa", "veiculo", "veículo", "cavalo", "frota"],
-    "motorista": ["motorista", "condutor"],
-    "cliente": ["cliente", "tomador"],
-    "razao_social": ["razao social", "razão social", "razao social cobranca", "razão social cobrança"],
-    "local_origem": ["origem", "local origem", "local da coleta"],
-    "local_destino": ["destino", "local destino", "local da entrega"],
-    "local_evento": ["local evento", "local", "endereco", "endereço"],
-    "data_inicio": ["data inicio", "data início", "dt inicio", "data entrada", "inicio"],
-    "hora_inicio": ["hora inicio", "hora início", "hr inicio", "hora entrada"],
-    "data_fim": ["data fim", "dt fim", "data saida", "data saída", "fim"],
-    "hora_fim": ["hora fim", "hr fim", "hora saida", "hora saída"],
-    "data_hora_inicio": ["data hora inicio", "data/hora inicio", "data hora entrada", "chegada"],
-    "data_hora_fim": ["data hora fim", "data/hora fim", "data hora saida", "saida"],
-    "tipo_evento": ["tipo evento", "evento", "ocorrencia", "ocorrência"],
-    "status": ["status", "situacao", "situação"],
-    "observacao": ["observacao", "observação", "obs"],
-    "valor_estadia": ["valor estadia", "valor", "vl estadia"],
-    "tempo_total": ["tempo total", "tempo", "duracao", "duração", "permanencia", "permanência"],
-    "data_hora_inicio_carga": ["data inicio carga", "data início carga", "inicio carga", "início carga", "dt inicio carga", "dt início carga"],
-    "data_hora_fim_carga": ["data termino carga", "data término carga", "termino carga", "término carga", "fim carga", "dt termino carga", "dt término carga"],
-    "tempo_carga": ["tempo carga", "tempo de carga"],
-    "data_hora_inicio_descarga": ["data inicio descarga", "data início descarga", "inicio descarga", "início descarga", "dt inicio descarga", "dt início descarga"],
-    "data_hora_fim_descarga": ["data termino descarga", "data término descarga", "termino descarga", "término descarga", "fim descarga", "dt termino descarga", "dt término descarga"],
-    "tempo_descarga": ["tempo descarga", "tempo de descarga"],
-    "remetente": ["remetente"],
-    "destinatario": ["destinatario", "destinatário"],
-    "operacao": ["operacao", "operação"],
-    "mercadoria": ["mercadoria", "produto"],
-    "romaneio": ["romaneio", "numero romaneio", "n romaneio"],
-    "numero_documento": ["numero documento", "n documento", "documento"],
-    "cte": ["cte", "ct-e", "conhecimento"],
-    "nf": ["nf", "nota fiscal", "nota"],
-    "pedido": ["pedido"],
-    "viagem": ["viagem"],
-}
 
 LCTE_ALIASES = {
     "cte": ["cte", "ct-e", "conhecimento", "numero cte", "numero ct-e", "n cte"],
@@ -180,24 +142,6 @@ RASTREADOR_ALIASES = {
     "motorista": ["motorista", "condutor"],
 }
 
-CONTROL_ALIASES["placa"].extend(["frota tracao", "frota traÃ§Ã£o", "placa tracao", "placa traÃ§Ã£o"])
-CONTROL_ALIASES["local_origem"].extend(["carregamento", "local carregamento"])
-CONTROL_ALIASES["local_destino"].extend(["descarga", "entrega", "destino"])
-CONTROL_ALIASES["data_hora_inicio"].extend(["dt carga i", "dt carga (i)", "data carga i", "data carga inicio", "dt prev c", "dt prev (c)", "data inicio"])
-CONTROL_ALIASES["data_hora_fim"].extend(["dt descarga i", "dt descarga (i)", "data descarga i", "data descarga inicio"])
-CONTROL_ALIASES["data_hora_inicio"].extend(["dt carga t", "dt carga (t)", "data carga t", "previsao carga", "previsão carga"])
-CONTROL_ALIASES["data_hora_fim"].extend(["dt descarga t", "dt descarga (t)", "data descarga t"])
-CONTROL_ALIASES["status"].extend(["situacao romaneio", "situaÃ§Ã£o romaneio", "conferencia romaneio", "conferÃªncia romaneio"])
-CONTROL_ALIASES["observacao"].extend(["alterado em", "alterado por"])
-CONTROL_ALIASES["tempo_total"].extend(["tempo carga", "tempo descarga"])
-CONTROL_ALIASES["numero_documento"].extend(["nÂº conhec", "n conhec"])
-CONTROL_ALIASES["cte"].extend(["documento"])
-CONTROL_ALIASES["nf"].extend(["notas fiscais"])
-CONTROL_ALIASES["numero_documento"].extend(["romaneio"])
-CONTROL_ALIASES["viagem"].extend(["romaneio"])
-CONTROL_ALIASES["numero_documento"].extend(["no conhec"])
-CONTROL_ALIASES["viagem"].extend(["no viagem"])
-CONTROL_ALIASES["viagem"].extend(["n viagem", "nÂº viagem", "numero viagem", "nÃºmero viagem"])
 
 LCTE_ALIASES["cte"].extend(["nÂº conhec", "n conhec", "nÃºmero conhec"])
 LCTE_ALIASES["nf"].extend(["notas fiscais"])
@@ -499,70 +443,6 @@ def _base_original_row(
     return payload
 
 
-def normalize_control_row(row: dict[str, Any], columns: dict[str, str], base: dict[str, Any]) -> dict[str, Any]:
-    data_hora_inicio_carga = row_value(row, columns.get("data_hora_inicio_carga", ""))
-    data_hora_fim_carga = row_value(row, columns.get("data_hora_fim_carga", ""))
-    data_hora_inicio_descarga = row_value(row, columns.get("data_hora_inicio_descarga", ""))
-    data_hora_fim_descarga = row_value(row, columns.get("data_hora_fim_descarga", ""))
-    data_hora_inicio_raw = row_value(row, columns.get("data_hora_inicio", "")) or data_hora_inicio_carga
-    data_hora_fim_raw = row_value(row, columns.get("data_hora_fim", "")) or data_hora_fim_descarga or data_hora_fim_carga
-    data_inicio = row_value(row, columns.get("data_inicio", ""))
-    hora_inicio = row_value(row, columns.get("hora_inicio", ""))
-    data_fim = row_value(row, columns.get("data_fim", ""))
-    hora_fim = row_value(row, columns.get("hora_fim", ""))
-    placa = row_value(row, columns.get("placa", ""))
-    tempo_carga = row_value(row, columns.get("tempo_carga", ""))
-    tempo_descarga = row_value(row, columns.get("tempo_descarga", ""))
-    romaneio = str(row_value(row, columns.get("romaneio", "")) or "")
-    operacao = normalizar_texto(row_value(row, columns.get("operacao", "")))
-    mercadoria = normalizar_texto(row_value(row, columns.get("mercadoria", "")))
-    remetente = normalizar_texto(row_value(row, columns.get("remetente", "")))
-    destinatario = normalizar_texto(row_value(row, columns.get("destinatario", "")))
-    observation_parts = [
-        f"Remetente: {remetente}" if remetente else "",
-        f"Destinatario: {destinatario}" if destinatario else "",
-        f"Operacao: {operacao}" if operacao else "",
-        f"Mercadoria: {mercadoria}" if mercadoria else "",
-        f"Inicio carga: {normalizar_data_hora('', '', data_hora_inicio_carga)}" if data_hora_inicio_carga not in [None, ""] else "",
-        f"Fim carga: {normalizar_data_hora('', '', data_hora_fim_carga)}" if data_hora_fim_carga not in [None, ""] else "",
-        f"Inicio descarga: {normalizar_data_hora('', '', data_hora_inicio_descarga)}" if data_hora_inicio_descarga not in [None, ""] else "",
-        f"Fim descarga: {normalizar_data_hora('', '', data_hora_fim_descarga)}" if data_hora_fim_descarga not in [None, ""] else "",
-        f"Tempo carga: {tempo_carga}" if tempo_carga not in [None, ""] else "",
-        f"Tempo descarga: {tempo_descarga}" if tempo_descarga not in [None, ""] else "",
-    ]
-    source_observation = str(row_value(row, columns.get("observacao", "")) or "")
-    observation = " | ".join(part for part in [source_observation, *observation_parts] if part)
-    total_time = normalizar_duracao_minutos(row_value(row, columns.get("tempo_total", "")))
-    if not total_time:
-        total_time = normalizar_duracao_minutos(tempo_carga) + normalizar_duracao_minutos(tempo_descarga)
-    payload = {
-        **base,
-        "placa": "" if placa in [None, ""] else str(placa),
-        "placa_norm": normalizar_placa(placa),
-        "motorista": normalizar_texto(row_value(row, columns.get("motorista", ""))),
-        "cliente": normalizar_texto(row_value(row, columns.get("cliente", ""))) or operacao or destinatario,
-        "razao_social": normalizar_texto(row_value(row, columns.get("razao_social", ""))) or remetente or destinatario,
-        "local_origem": normalizar_texto(row_value(row, columns.get("local_origem", ""))),
-        "local_destino": normalizar_texto(row_value(row, columns.get("local_destino", ""))),
-        "local_evento": normalizar_texto(row_value(row, columns.get("local_evento", ""))),
-        "data_inicio": normalizar_data(data_inicio),
-        "hora_inicio": normalizar_hora(hora_inicio),
-        "data_fim": normalizar_data(data_fim),
-        "hora_fim": normalizar_hora(hora_fim),
-        "data_hora_inicio": normalizar_data_hora(data_inicio, hora_inicio, data_hora_inicio_raw),
-        "data_hora_fim": normalizar_data_hora(data_fim, hora_fim, data_hora_fim_raw),
-        "tipo_evento": normalizar_texto(row_value(row, columns.get("tipo_evento", ""))) or "CARGA/DESCARGA",
-        "status": normalizar_texto(row_value(row, columns.get("status", ""))),
-        "observacao": observation,
-        "valor_estadia": normalizar_valor_monetario(row_value(row, columns.get("valor_estadia", ""))),
-        "tempo_total": total_time,
-        "numero_documento": str(row_value(row, columns.get("numero_documento", "")) or romaneio),
-        "cte": str(row_value(row, columns.get("cte", "")) or ""),
-        "nf": _document_list_text(row_value(row, columns.get("nf", ""))),
-        "pedido": str(row_value(row, columns.get("pedido", "")) or ""),
-        "viagem": str(row_value(row, columns.get("viagem", "")) or romaneio),
-    }
-    return payload
 
 
 def normalize_lcte_row(row: dict[str, Any], columns: dict[str, str], base: dict[str, Any], sequence: int = 0) -> dict[str, Any]:
@@ -654,64 +534,6 @@ def normalize_rastreador_row(row: dict[str, Any], columns: dict[str, str], base:
     }
 
 
-def import_control(file: BinaryIO, usuario: str, duplicate_mode: str = "bloquear") -> dict[str, Any]:
-    file_name = getattr(file, "name", "control.xlsx")
-    content = _file_bytes(file)
-    file_hash = hash_file_bytes(content)
-    if hash_already_imported(file_hash, "CONTROL"):
-        if duplicate_mode == "bloquear":
-            return {"status": "DUPLICADO", "arquivo": file_name, "mensagem": "Este arquivo já foi importado anteriormente.", "linhas": 0}
-        if duplicate_mode == "substituir":
-            delete_by_hash(file_hash, "CONTROL")
-    lote = make_lote("CONTROL")
-    imported_at = brasilia_now_iso()
-    try:
-        df, sheet_name = read_tabular_file(file_name, content)
-        df, promoted_header_row = promote_header_row(df, CONTROL_ALIASES)
-        columns = column_map(df, CONTROL_ALIASES)
-        original_rows = []
-        normalized_rows = []
-        for index, raw in enumerate(df.to_dict(orient="records")):
-            base = _base_original_row(raw, lote, file_name, usuario, imported_at, file_hash, index)
-            original_rows.append(base)
-            normalized_rows.append(normalize_control_row(raw, columns, base))
-        stats = import_stats(normalized_rows, "data_hora_inicio")
-        inserted = insert_rows(CONTROL_ORIGINAL_TABLE, original_rows)
-        insert_rows(CONTROL_NORMALIZED_TABLE, normalized_rows)
-        registrar_log_importacao(
-            usuario=usuario,
-            tipo_importacao="CONTROL",
-            arquivo_origem=file_name,
-            hash_arquivo=file_hash,
-            lote_importacao=lote,
-            quantidade_linhas=len(df),
-            quantidade_registros_inseridos=inserted,
-            quantidade_registros_ignorados=stats["registros_com_erro"],
-            status="SUCESSO",
-            mensagem="Arquivo CONTROL importado.",
-            detalhes={"aba": sheet_name, "linha_cabecalho_promovida": promoted_header_row, "colunas_encontradas": columns, "colunas_arquivo": list(map(str, df.columns)), **stats},
-        )
-        return {
-            "status": "SUCESSO",
-            "arquivo": file_name,
-            "lote": lote,
-            "linhas": len(df),
-            **stats,
-            "linha_cabecalho_promovida": promoted_header_row,
-            "colunas_encontradas": columns,
-            "amostra": df.head(20),
-        }
-    except Exception as exc:
-        registrar_log_importacao(
-            usuario=usuario,
-            tipo_importacao="CONTROL",
-            arquivo_origem=file_name,
-            hash_arquivo=file_hash,
-            lote_importacao=lote,
-            status="ERRO",
-            mensagem=str(exc),
-        )
-        return {"status": "ERRO", "arquivo": file_name, "mensagem": str(exc), "linhas": 0}
 
 
 def import_lcte_ipiranga(file: BinaryIO, usuario: str, duplicate_mode: str = "bloquear") -> dict[str, Any]:

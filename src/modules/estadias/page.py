@@ -19,7 +19,6 @@ from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
 from src.modules.estadias.imports import extrair_placa_do_nome_arquivo, import_lcte_ipiranga, import_rastreador_files, validate_pgadmin_rastreador_csv
 from src.modules.estadias.repository import (
-    CONTROL_NORMALIZED_TABLE,
     CROSS_TABLE,
     LCTE_NORMALIZED_TABLE,
     RASTREADOR_NORMALIZED_TABLE,
@@ -107,7 +106,7 @@ def _filter_results(df: pd.DataFrame) -> pd.DataFrame:
     destino = col_f.text_input("Destino", key="estadias_result_destino")
     special = col_g.selectbox(
         "Situacao",
-        ["", "Com estadia", "Sem estadia", "Elegivel", "Nao elegivel", "Erro", "Vinculo confirmado", "Vinculo provavel", "Aguardando revisao", "Viagem em andamento", "Sem CONTROL", "Sem rastreador", "Sem coordenadas"],
+        ["", "Com estadia", "Sem estadia", "Elegivel", "Nao elegivel", "Erro", "Sem rastreador", "Sem coordenadas"],
         key="estadias_result_special",
     )
     periodo = col_h.text_input("Periodo contem", key="estadias_result_periodo")
@@ -136,16 +135,6 @@ def _filter_results(df: pd.DataFrame) -> pd.DataFrame:
         ]
     elif special == "Erro":
         filtered = filtered[filtered.get("status_cruzamento", pd.Series(dtype=str)).fillna("").astype(str).eq("ERRO")]
-    elif special == "Vinculo confirmado":
-        filtered = filtered[filtered.get("classificacao_control", pd.Series(dtype=str)).fillna("").astype(str).eq("CONFIRMADO")]
-    elif special == "Vinculo provavel":
-        filtered = filtered[filtered.get("classificacao_control", pd.Series(dtype=str)).fillna("").astype(str).eq("PROVAVEL")]
-    elif special == "Aguardando revisao":
-        filtered = filtered[filtered.get("classificacao_control", pd.Series(dtype=str)).fillna("").astype(str).eq("REVISAO_MANUAL")]
-    elif special == "Viagem em andamento":
-        filtered = filtered[filtered.get("motivo_falha", pd.Series(dtype=str)).fillna("").astype(str).str.contains("CONTROL_VIAGEM_EM_ANDAMENTO", na=False)]
-    elif special == "Sem CONTROL":
-        filtered = filtered[filtered.get("encontrou_control", pd.Series(dtype=int)).fillna(0).astype(int).ne(1)]
     elif special == "Sem rastreador":
         filtered = filtered[filtered.get("encontrou_rastreador", pd.Series(dtype=int)).fillna(0).astype(int).ne(1)]
     elif special == "Sem coordenadas":
@@ -524,11 +513,9 @@ def _with_estadia_display_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     view = df.copy()
-    control_flag = view["encontrou_control"] if "encontrou_control" in view.columns else pd.Series(0, index=view.index)
     tracker_flag = view["encontrou_rastreador"] if "encontrou_rastreador" in view.columns else pd.Series(0, index=view.index)
     horas = pd.to_numeric(view["horas_estadia"] if "horas_estadia" in view.columns else pd.Series(0, index=view.index), errors="coerce").fillna(0)
     view["Estadia"] = horas.gt(0).map(lambda value: "Estadia" if value else "Sem estadia")
-    view["Relatorio CONTROL"] = pd.to_numeric(control_flag, errors="coerce").fillna(0).astype(int).eq(1).map(lambda value: "OK" if value else "FALTANDO")
     view["Relatorio Rastreador"] = pd.to_numeric(tracker_flag, errors="coerce").fillna(0).astype(int).eq(1).map(lambda value: "OK" if value else "FALTANDO")
     view["Data Emissao NF"] = _safe_series(view, "data_emissao_nf").map(_format_datetime_display)
     view["Tipo ponto origem"] = "ORIGEM"
@@ -553,7 +540,6 @@ def _export_sheets(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     com_rastreador = series("encontrou_rastreador", 0).fillna(0).astype(int).eq(1)
     elegiveis = series("elegivel_cobranca", 0).fillna(0).astype(int).eq(1)
     status = series("status_cruzamento").fillna("").astype(str)
-    classificacao = series("classificacao_control").fillna("").astype(str)
     codigo_motivo = series("codigo_motivo").fillna("").astype(str)
     motivo_falha = series("motivo_falha").fillna("").astype(str)
     motivos = codigo_motivo + " " + motivo_falha
@@ -566,9 +552,7 @@ def _export_sheets(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "nao_elegiveis": result[calculadas & elegiveis.ne(True)],
         "nao_calculadas": result[com_rastreador & calculadas.ne(True)],
         "inconsistencias": result[status.eq("ERRO") | motivos.str.contains("MULTIPLAS|CONFLITO|INVALIDA|ERRO", regex=True, na=False)],
-        "sem_control": result[series("encontrou_control", 0).fillna(0).astype(int).ne(1)],
         "sem_rastreador": result[com_rastreador.ne(True)],
-        "vinculos_provaveis": result[classificacao.isin(["PROVAVEL", "REVISAO_MANUAL"])],
         "sem_coordenadas": result[codigo_motivo.str.contains("SEM_COORDENADAS", na=False)],
         "diagnostico": result,
         "auditoria": read_auditoria(5000),
@@ -579,7 +563,7 @@ def render_dashboard_page() -> None:
     st.title("Dashboard Estadias")
     metric_grid(dashboard_metrics(), columns=4)
     with st.expander("Limpeza do banco de Estadias", expanded=False):
-        st.warning("Esta acao limpa LCTE, CONTROL, Rastreador, cruzamentos, diagnosticos e logs de importacao de Estadias. Configuracoes, locais e parametros serao mantidos.")
+        st.warning("Esta acao limpa LCTE, Rastreador, cruzamentos, diagnosticos e logs de importacao de Estadias. Configuracoes, locais e parametros serao mantidos.")
         confirmar = st.text_input("Digite LIMPAR ESTADIAS para confirmar", key="estadias_confirmar_limpeza_total")
         if st.button("Limpar banco de Estadias", type="primary", use_container_width=True, disabled=confirmar.strip().upper() != "LIMPAR ESTADIAS"):
             deleted = clear_estadias_imported_database()
@@ -852,7 +836,6 @@ PANEL_DEFAULT_COLUMNS = {
         "Motivo conferência",
         "Prazo resposta",
         "Situação análise",
-        "Relatorio CONTROL",
         "Relatorio Rastreador",
         "Notas",
         "Data Emissao NF",
@@ -863,11 +846,7 @@ PANEL_DEFAULT_COLUMNS = {
         "Chegada Rastreador",
         "Saida Rastreador",
         "Tempo Rastreador",
-        "Chegada Control",
-        "Saida Control",
-        "Tempo Control",
         "Status Estadia",
-        "Diferenca",
         "Motivo",
         "Concluir",
     ],
@@ -879,7 +858,7 @@ PANEL_DEFAULT_COLUMNS = {
         "Chegada Rastreador Descarga", "Saida Rastreador Descarga", "Tempo Rastreador Descarga",
         "Status Estadia Carga", "Status Estadia Descarga",
         "Conferência Carga", "Conferência Descarga",
-        "Relatorio CONTROL", "Relatorio Rastreador",
+        "Relatorio Rastreador",
     ],
     "ESTADIAS": [
         "id",
@@ -1048,9 +1027,7 @@ def _panel_base(df: pd.DataFrame, panel: str) -> pd.DataFrame:
 
 def _cross_card_defs(panel: str) -> list[dict[str, str]]:
     common = [
-        {"key": "sem_control", "label": "Sem CONTROL", "group": "control"},
         {"key": "sem_rastreador", "label": "Sem Rastreador", "group": "rastreador"},
-        {"key": "divergencia_tolerancia", "label": "Fora da tolerancia", "group": "tolerancia"},
         {"key": "origem_destino_falha", "label": "Origem/destino pendente", "group": "permanencia"},
     ]
     if panel == "ESTADIAS":
@@ -1058,7 +1035,6 @@ def _cross_card_defs(panel: str) -> list[dict[str, str]]:
             {"key": "estadia_carga", "label": "Estadia na carga", "group": "tipo_estadia"},
             {"key": "estadia_descarga", "label": "Estadia na descarga", "group": "tipo_estadia"},
             {"key": "valor_estimado", "label": "Com valor estimado", "group": "valor"},
-            {"key": "match_valido", "label": "Dentro da tolerancia", "group": "tolerancia"},
         ]
     if panel == "CONCLUIDOS":
         return [
@@ -1080,12 +1056,8 @@ def _cross_card_defs(panel: str) -> list[dict[str, str]]:
 def _cross_card_mask(df: pd.DataFrame, key: str) -> pd.Series:
     status_prazo = _safe_series(df, "status_prazo").fillna("").astype(str)
     painel = _safe_series(df, "painel_atual").fillna("").astype(str).str.upper()
-    if key == "sem_control":
-        return ~_bool_series(df, "encontrou_control")
     if key == "sem_rastreador":
         return ~_bool_series(df, "encontrou_rastreador")
-    if key == "divergencia_tolerancia":
-        return _num_series(df, "eventos_comparaveis").gt(0) & ~_bool_series(df, "dentro_tolerancia_control_rastreador")
     if key == "origem_destino_falha":
         return ~_bool_series(df, "encontrou_origem") | ~_bool_series(df, "encontrou_destino")
     if key == "estadia_carga":
@@ -1094,8 +1066,6 @@ def _cross_card_mask(df: pd.DataFrame, key: str) -> pd.Series:
         return _num_series(df, "estadia_descarga_min").gt(0)
     if key == "valor_estimado":
         return _num_series(df, "valor_estimado_estadia").gt(0)
-    if key == "match_valido":
-        return _num_series(df, "eventos_comparaveis").gt(0) & _bool_series(df, "dentro_tolerancia_control_rastreador")
     if key == "retorno_pendente":
         return _safe_series(df, "status_cte").fillna("").astype(str).str.contains("Aguardando retorno", case=False, na=False)
     if key == "prazo_vencido":
@@ -1250,13 +1220,6 @@ def _configured_columns(panel: str, df: pd.DataFrame, usuario: str) -> list[str]
     if widget_key not in st.session_state:
         saved = [column for column in read_preferencia_colunas(usuario, panel) if column in options]
         st.session_state[widget_key] = saved or defaults
-    if panel == "RESUMO":
-        st.session_state[widget_key] = _insert_column_after(
-            list(st.session_state.get(widget_key, defaults)),
-            "Status Estadia",
-            "Tempo Control",
-            options,
-        )
     with st.expander("Configurar colunas", expanded=False):
         col_a, col_b, col_c = st.columns(3)
         col_a.button("Modelo padrao", key=f"{widget_key}_default", on_click=_set_column_selection, args=(widget_key, defaults))
@@ -1358,12 +1321,10 @@ def _render_cross_diagnostic(cross: pd.DataFrame) -> None:
     metric_grid(
         {
             "Encontrou no LCTE": "SIM" if int(row.get("encontrou_lcte") or 0) else "NAO",
-            "Encontrou no CONTROL": "SIM" if int(row.get("encontrou_control") or 0) else "NAO",
             "Encontrou no Rastreador": "SIM" if int(row.get("encontrou_rastreador") or 0) else "NAO",
             "Encontrou origem": "SIM" if int(row.get("encontrou_origem") or 0) else "NAO",
             "Encontrou destino": "SIM" if int(row.get("encontrou_destino") or 0) else "NAO",
             "Calculou estadia": "SIM" if int(row.get("calculou_estadia") or 0) else "NAO",
-            "Maior divergencia": row.get("maior_divergencia_min") or 0,
             "Painel atual": row.get("painel_atual") or "-",
         },
         columns=4,
@@ -1376,17 +1337,10 @@ def _render_cross_diagnostic(cross: pd.DataFrame) -> None:
             "Tempo na origem": _format_minutes_value(row.get("tempo_origem_min")),
             "Destino": row.get("destino"),
             "Tempo no destino": _format_minutes_value(row.get("tempo_destino_min")),
-            "CONTROL chegada origem": _format_datetime_display(row.get("control_chegada_origem")),
             "Rastreador chegada origem": _format_datetime_display(row.get("chegada_origem")),
-            "CONTROL saida origem": _format_datetime_display(row.get("control_saida_origem")),
             "Rastreador saida origem": _format_datetime_display(row.get("saida_origem")),
-            "CONTROL chegada destino": _format_datetime_display(row.get("control_chegada_destino")),
             "Rastreador chegada destino": _format_datetime_display(row.get("chegada_destino")),
-            "CONTROL saida destino": _format_datetime_display(row.get("control_saida_destino")),
             "Rastreador saida destino": _format_datetime_display(row.get("saida_destino")),
-            "Eventos comparaveis": row.get("eventos_comparaveis"),
-            "Eventos sem CONTROL": row.get("eventos_sem_control"),
-            "Eventos sem Rastreador": row.get("eventos_sem_rastreador"),
         }
     )
     render_dataframe(_permanence_rows(detail), height=220, max_rows=2)
@@ -1551,27 +1505,6 @@ def _analysis_deadline_status(sent_at: object, replied_at: object, now: datetime
     return deadline.strftime("%d/%m/%Y %H:%M"), status
 
 
-def _line_diff_value(row: pd.Series, tipo: str) -> float | None:
-    if tipo == "ORIGEM":
-        values = [row.get("diferenca_chegada_origem_min"), row.get("diferenca_saida_origem_min")]
-    else:
-        values = [row.get("diferenca_chegada_destino_min"), row.get("diferenca_saida_destino_min")]
-    numeric = [float(value) for value in pd.to_numeric(pd.Series(values), errors="coerce").dropna().tolist()]
-    return max(numeric) if numeric else None
-
-
-def _line_control_minutes(row: pd.Series, tipo: str) -> float | None:
-    if tipo == "ORIGEM":
-        start = pd.to_datetime(row.get("control_chegada_origem"), errors="coerce")
-        end = pd.to_datetime(row.get("control_saida_origem"), errors="coerce")
-    else:
-        start = pd.to_datetime(row.get("control_chegada_destino"), errors="coerce")
-        end = pd.to_datetime(row.get("control_saida_destino"), errors="coerce")
-    if pd.isna(start) or pd.isna(end) or end < start:
-        return None
-    return round(float((end - start).total_seconds() / 60), 2)
-
-
 def _line_tracker_minutes(row: pd.Series, tipo: str) -> float | None:
     found_col = "encontrou_origem" if tipo == "ORIGEM" else "encontrou_destino"
     time_col = "tempo_origem_min" if tipo == "ORIGEM" else "tempo_destino_min"
@@ -1594,7 +1527,7 @@ def _line_status(row: pd.Series, tipo: str) -> str:
     return "SEM ESTADIA"
 
 
-def _line_reason(row: pd.Series, tipo: str, status: str, diff_value: float | None) -> str:
+def _line_reason(row: pd.Series, tipo: str, status: str) -> str:
     if status == "CONCLUIDO":
         return "Concluido"
     found_col = "encontrou_origem" if tipo == "ORIGEM" else "encontrou_destino"
@@ -1643,7 +1576,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
         "Conferência manual",
         "Motivo manual",
         "Tempo Rastreador em minutos",
-        "Tempo Control em minutos",
         "lcte_id",
         "cte",
         "nf",
@@ -1654,7 +1586,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
         "data_inicio_viagem_referencia",
         "data_hora_carga",
         "painel_atual",
-        "encontrou_control",
         "encontrou_rastreador",
         "concluido",
         "motivo_falha",
@@ -1669,8 +1600,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
             chegada_tracker,
             saida_tracker,
             tempo_tracker,
-            chegada_control,
-            saida_control,
             special_col,
             city_col,
             method_col,
@@ -1687,8 +1616,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                 "chegada_origem",
                 "saida_origem",
                 "tempo_origem_min",
-                "control_chegada_origem",
-                "control_saida_origem",
                 "regra_especial_origem",
                 "municipio_operacional_origem",
                 "metodo_localizacao_origem",
@@ -1705,8 +1632,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                 "chegada_destino",
                 "saida_destino",
                 "tempo_destino_min",
-                "control_chegada_destino",
-                "control_saida_destino",
                 "regra_especial_destino",
                 "municipio_operacional_destino",
                 "metodo_localizacao_destino",
@@ -1719,13 +1644,10 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                 "pontos_destino",
             ),
         ]:
-            diff_value = _line_diff_value(row, tipo)
             status = _line_status(row, tipo)
             tracker_minutes = _line_tracker_minutes(row, tipo)
-            control_minutes = _line_control_minutes(row, tipo)
             stay_minutes = row.get("estadia_carga_min") if tipo == "ORIGEM" else row.get("estadia_descarga_min")
             status_estadia, fonte_status_estadia = _status_estadia_from_minutes(tracker_minutes, stay_minutes)
-            encontrou_control = _safe_int_value(row.get("encontrou_control"))
             encontrou_rastreador = _safe_int_value(row.get("encontrou_rastreador"))
             sent_at = row.get("analise_enviada_em")
             replied_at = row.get("analise_respondida_em")
@@ -1736,7 +1658,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                 {
                     "Status": status,
                     "Estadia": "Estadia" if status_estadia == "ESTADIA" else ("Sem estadia" if status_estadia == "SEM ESTADIA" else "Pendente"),
-                    "Relatorio CONTROL": "OK" if encontrou_control else "FALTANDO",
                     "Relatorio Rastreador": "OK" if encontrou_rastreador else "FALTANDO",
                     "Notas": row.get("nf") or row.get("cte") or "",
                     "Data Emissao NF": _format_datetime_display(row.get("data_emissao_nf")),
@@ -1747,9 +1668,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Chegada Rastreador": _format_datetime_display(row.get(chegada_tracker)),
                     "Saida Rastreador": _format_datetime_display(row.get(saida_tracker)),
                     "Tempo Rastreador": _format_hhmm(tracker_minutes),
-                    "Chegada Control": _format_datetime_display(row.get(chegada_control)),
-                    "Saida Control": _format_datetime_display(row.get(saida_control)),
-                    "Tempo Control": _format_hhmm(control_minutes),
                     "Status Estadia": status_estadia,
                     "Enviada para análise": bool(sent_at),
                     "Enviada em": _format_datetime_display(sent_at) if sent_at else "",
@@ -1760,8 +1678,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Motivo manual": row.get("motivo_conferencia_origem" if tipo == "ORIGEM" else "motivo_conferencia_destino") or "",
                     "Prazo resposta": deadline,
                     "Situação análise": analysis_status,
-                    "Diferenca": f"{int(round(diff_value))} min" if diff_value is not None else "",
-                    "Motivo": _line_reason(row, tipo, status, diff_value),
+                    "Motivo": _line_reason(row, tipo, status),
                     "Concluir": "Concluir" if status in {"ESTADIA", "PENDENTE"} else "",
                     "Regra especial aplicada?": "SIM" if _safe_bool_value(row.get(special_col)) else "NAO",
                     "Municipio operacional": row.get(city_col) or "",
@@ -1777,7 +1694,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "Motivo da escolha": row.get(choice_reason_col) or "",
                     "Fonte Status Estadia": fonte_status_estadia,
                     "Tempo Rastreador em minutos": tracker_minutes,
-                    "Tempo Control em minutos": control_minutes,
                     "lcte_id": _safe_int_value(row.get("lcte_id") or row.get("id")),
                     "cte": row.get("cte") or "",
                     "nf": row.get("nf") or "",
@@ -1788,7 +1704,6 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "data_inicio_viagem_referencia": row.get("data_inicio_viagem_referencia") or row.get("data_hora_carga") or row.get("data_operacao") or "",
                     "data_hora_carga": row.get("data_hora_carga") or "",
                     "painel_atual": row.get("painel_atual") or "",
-                    "encontrou_control": encontrou_control,
                     "encontrou_rastreador": encontrou_rastreador,
                     "concluido": _safe_int_value(row.get("concluido")),
                     "motivo_falha": row.get("motivo_falha") or "",
@@ -1803,7 +1718,7 @@ def _build_trip_summary_table(lines: pd.DataFrame) -> pd.DataFrame:
     side_fields = [
         "Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência",
         "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador",
-        "Chegada Control", "Saida Control", "Tempo Control", "Diferenca", "Motivo",
+        "Motivo",
     ]
     rows = []
     for _, group in lines.groupby("lcte_id", sort=False):
@@ -1888,8 +1803,6 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
 
 
 def _apply_validation_card(df: pd.DataFrame, card: str) -> pd.DataFrame:
-    if card == "CONTROL":
-        return df[df["encontrou_control"].fillna(0).astype(int).eq(1)]
     if card == "RASTREADOR":
         return df[df["encontrou_rastreador"].fillna(0).astype(int).eq(1)]
     return df
@@ -1940,10 +1853,9 @@ def _render_validation_cards(df: pd.DataFrame) -> str:
     unique = df.drop_duplicates("lcte_id") if "lcte_id" in df.columns else df
     cards = [
         ("LCTE", "Viagens no LCTE", len(unique)),
-        ("CONTROL", "Relacionadas ao Control", int(unique["encontrou_control"].fillna(0).astype(int).eq(1).sum()) if not unique.empty else 0),
         ("RASTREADOR", "Com registro no Rastreador", int(unique["encontrou_rastreador"].fillna(0).astype(int).eq(1).sum()) if not unique.empty else 0),
     ]
-    cols = st.columns(3)
+    cols = st.columns(2)
     for idx, (key, label, count) in enumerate(cards):
         cols[idx].button(
             f"{label}\n{count}",
@@ -2046,7 +1958,6 @@ def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
                 "Destino": row.get("destino"),
                 "Pontos GPS origem": row.get("pontos_origem"),
                 "Pontos GPS destino": row.get("pontos_destino"),
-                "Raio/tolerancia": row.get("tolerancia_control_rastreador_min"),
                 "Conclusao": row.get("tipo_conclusao"),
                 "Observacao": row.get("observacao_conclusao"),
             }
@@ -2150,7 +2061,7 @@ def render_cross_page(usuario: str) -> None:
     if requirement == "LCTE":
         st.warning("LCTE nao encontrado. Importe o LCTE para identificar as viagens antes de recalcular.")
     elif requirement == "CSV":
-        st.warning("As posicoes brutas foram removidas apos o ultimo calculo. Selecione o CSV do rastreador abaixo para recalcular. CONTROL nao substitui o rastreador.")
+        st.warning("As posicoes brutas foram removidas apos o ultimo calculo. Selecione o CSV do rastreador abaixo para recalcular.")
         csv_files = st.file_uploader("CSV de posicoes do rastreador", type=["csv"], accept_multiple_files=True, key="estadias_recalculo_csv")
     button_label = {"LCTE": "IMPORTAR LCTE", "CSV": "RECALCULAR COM CSV"}.get(requirement, "RECALCULAR PLACA" if selected_plate else "RECALCULAR REGRAS")
     clicked_recalculate = col_update.button(button_label, type="primary", use_container_width=True)
@@ -2269,7 +2180,7 @@ def render_cross_page(usuario: str) -> None:
         visible_columns = _configured_columns("VIAGENS", filtered if not filtered.empty else summary, usuario)
     mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS, *RULES, "Correspondência PerformanceRW", "Motivo vínculo PerformanceRW"]
     for suffix in ("Carga", "Descarga"):
-        mandatory.extend(f"{field} {suffix}" for field in ("Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência", "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador", "Chegada Control", "Saida Control", "Tempo Control"))
+        mandatory.extend(f"{field} {suffix}" for field in ("Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência", "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador"))
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
@@ -2417,86 +2328,6 @@ def render_cross_page(usuario: str) -> None:
     _render_summary_detail(filtered, cross)
     return
 
-    metric_grid(
-        {
-            "Viagens processadas": len(cross),
-            "Com estadia": int(pd.to_numeric(cross.get("horas_estadia", pd.Series(dtype=float)), errors="coerce").fillna(0).gt(0).sum()),
-            "Sem estadia": int(pd.to_numeric(cross.get("horas_estadia", pd.Series(dtype=float)), errors="coerce").fillna(0).le(0).sum()),
-            "Sem CONTROL": int(cross["encontrou_control"].fillna(0).astype(int).ne(1).sum()),
-            "Sem Rastreador": int(cross["encontrou_rastreador"].fillna(0).astype(int).ne(1).sum()),
-            "Falha origem/destino": int((cross["encontrou_origem"].fillna(0).astype(int).ne(1) | cross["encontrou_destino"].fillna(0).astype(int).ne(1)).sum()),
-        },
-        columns=6,
-    )
-
-    st.subheader("Diagnostico da Viagem")
-    options = [
-        f"{row.get('id')} | {row.get('placa_norm') or '-'} | {row.get('chave_viagem') or '-'} | CT-e {row.get('cte') or '-'} | NF {row.get('nf') or '-'}"
-        for _, row in cross.iterrows()
-    ]
-    selected = st.selectbox("Viagem", options, key="estadias_diagnostico_viagem")
-    selected_id = int(str(selected).split("|", 1)[0].strip()) if selected else 0
-    detail = cross[cross["id"].astype(int).eq(selected_id)].head(1)
-    if not detail.empty:
-        row = detail.iloc[0]
-        metric_grid(
-            {
-                "Encontrou no LCTE": "SIM" if int(row.get("encontrou_lcte") or 0) else "NAO",
-                "Encontrou no CONTROL": "SIM" if int(row.get("encontrou_control") or 0) else "NAO",
-                "Encontrou no Rastreador": "SIM" if int(row.get("encontrou_rastreador") or 0) else "NAO",
-                "Encontrou origem": "SIM" if int(row.get("encontrou_origem") or 0) else "NAO",
-                "Encontrou destino": "SIM" if int(row.get("encontrou_destino") or 0) else "NAO",
-                "Calculou estadia": "SIM" if int(row.get("calculou_estadia") or 0) else "NAO",
-                "Pontuacao CONTROL": row.get("pontuacao_control") or 0,
-                "Elegivel": "SIM" if int(row.get("elegivel_cobranca") or 0) else "NAO",
-            },
-            columns=4,
-        )
-        if str(row.get("motivo_falha") or "").strip():
-            st.error(row.get("motivo_falha"))
-        st.write(
-            {
-                "Tipo ponto origem": "ORIGEM",
-                "Local origem": row.get("origem"),
-                "Tempo na origem (min)": row.get("tempo_origem_min"),
-                "Tempo na origem": _format_minutes_value(row.get("tempo_origem_min")),
-                "Tipo ponto destino": "DESTINO",
-                "Local destino": row.get("destino"),
-                "Tempo no destino (min)": row.get("tempo_destino_min"),
-                "Tempo no destino": _format_minutes_value(row.get("tempo_destino_min")),
-                "Franquia carga (min)": row.get("franquia_carga_min"),
-                "Franquia descarga (min)": row.get("franquia_descarga_min"),
-                "Estadia carga apos franquia (min)": row.get("estadia_carga_min"),
-                "Estadia descarga apos franquia (min)": row.get("estadia_descarga_min"),
-                "Horas de estadia": row.get("horas_estadia"),
-                "Valor estimado": row.get("valor_estimado_estadia"),
-                "Tempo Operacional (min)": row.get("tempo_operacional_min"),
-                "Tempo em Transito (min)": row.get("tempo_transito_min"),
-                "Tempo Total da Viagem (min)": row.get("tempo_total_viagem_min"),
-                "Tempo CONTROL (min)": row.get("tempo_control_min"),
-                "Tempo Rastreador (min)": row.get("tempo_rastreador_min"),
-                "Diferenca CONTROL x Rastreador (min)": row.get("diferenca_control_rastreador_min"),
-                "Km percorrido": row.get("km_percorrido"),
-                "Distancia ponto carga km": row.get("distancia_ponto_carga_km"),
-                "Distancia ponto descarga km": row.get("distancia_ponto_descarga_km"),
-            }
-        )
-        st.subheader("Permanencia por origem/destino")
-        render_dataframe(_permanence_rows(detail), height=220, max_rows=2)
-        with st.expander("Log detalhado de processamento", expanded=False):
-            st.json(row.get("diagnostico_json") or "{}")
-            st.json(row.get("log_processamento_json") or "[]")
-
-    filtered = _filter_results(cross)
-    st.download_button(
-        "Exportar resultado Excel",
-        dataframe_to_excel(_export_sheets(filtered)),
-        "diagnostico_estadias.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        disabled=filtered.empty,
-    )
-    render_dataframe(_with_estadia_display_columns(filtered), height=560, max_rows=1000)
 
 
 def render_logs_page() -> None:
@@ -2506,7 +2337,7 @@ def render_logs_page() -> None:
 
 def render_config_page(usuario: str) -> None:
     st.title("Configuracoes Estadias")
-    st.caption("Parametros aplicados no cruzamento LCTE x CONTROL x Rastreador.")
+    st.caption("Parametros aplicados no cruzamento LCTE x Rastreador.")
     tab_config, tab_locais, tab_parametros, tab_auditoria = st.tabs(["Gerais", "Locais operacionais", "Parametros por cliente", "Auditoria"])
     with tab_config:
         df = read_config()

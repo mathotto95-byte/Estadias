@@ -51,16 +51,13 @@ STATUS_LOG_TABLE = "mod_estadias_historico_status"
 def counts() -> dict[str, int]:
     return {
         "Total de viagens LCTE": table_count(LCTE_NORMALIZED_TABLE),
-        "Total de registros CONTROL": table_count(CONTROL_NORMALIZED_TABLE),
         "Total de registros Rastreador": table_count(RASTREADOR_NORMALIZED_TABLE),
         "Total de arquivos rastreador importados": distinct_count(RASTREADOR_NORMALIZED_TABLE, "arquivo_origem"),
         "Total de placas LCTE": distinct_count(LCTE_NORMALIZED_TABLE, "placa_norm"),
         "Total de placas rastreador": distinct_count(RASTREADOR_NORMALIZED_TABLE, "placa_norm"),
         "Registros sem placa": table_count_where(LCTE_NORMALIZED_TABLE, "coalesce(placa_norm, '') = ''")
-        + table_count_where(CONTROL_NORMALIZED_TABLE, "coalesce(placa_norm, '') = ''")
         + table_count_where(RASTREADOR_NORMALIZED_TABLE, "coalesce(placa_norm, '') = ''"),
         "Registros com erro de data/hora": table_count_where(LCTE_NORMALIZED_TABLE, "coalesce(data_operacao, '') = ''")
-        + table_count_where(CONTROL_NORMALIZED_TABLE, "coalesce(data_hora_inicio, '') = ''")
         + table_count_where(RASTREADOR_NORMALIZED_TABLE, "coalesce(data_hora, '') = ''"),
     }
 
@@ -699,7 +696,7 @@ def arquivos_rastreador_importados(limit: int = 500) -> pd.DataFrame:
 @st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
 def placas_disponiveis() -> pd.DataFrame:
     rows = []
-    for origem, table in [("LCTE", LCTE_NORMALIZED_TABLE), ("CONTROL", CONTROL_NORMALIZED_TABLE), ("RASTREADOR", RASTREADOR_NORMALIZED_TABLE)]:
+    for origem, table in [("LCTE", LCTE_NORMALIZED_TABLE), ("RASTREADOR", RASTREADOR_NORMALIZED_TABLE)]:
         for placa in select_distinct(table, "placa_norm", 2000):
             rows.append({"Origem": origem, "Placa": placa})
     return pd.DataFrame(rows)
@@ -721,7 +718,8 @@ def read_cross(limit: int = 1000) -> pd.DataFrame:
         hours = pd.to_numeric(rows["horas_estadia"], errors="coerce").fillna(0)
         values = pd.to_numeric(rows.get("valor_estimado_estadia", pd.Series(0, index=rows.index)), errors="coerce")
         rows["valor_estimado_estadia"] = values.where(values.fillna(0).ne(0), (hours * 68.40).round(2))
-    return rows
+    legacy = [column for column in rows if "control" in column.lower() or column.startswith(("diferenca_", "eventos_", "maior_divergencia", "media_divergencias"))]
+    return rows.drop(columns=legacy)
 
 
 def save_analysis_flags(lcte_id: int, sent: bool, replied: bool, usuario: str) -> None:
