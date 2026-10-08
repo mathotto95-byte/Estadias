@@ -1223,13 +1223,16 @@ def _configured_columns(panel: str, df: pd.DataFrame, usuario: str) -> list[str]
         saved = [column for column in read_preferencia_colunas(usuario, panel) if column in options]
         st.session_state[widget_key] = saved or defaults
     with st.expander("Configurar colunas", expanded=False):
-        col_a, col_b, col_c = st.columns(3)
+        col_a, col_b = st.columns(2)
         col_a.button("Modelo padrao", key=f"{widget_key}_default", on_click=_set_column_selection, args=(widget_key, defaults))
         col_b.button("Todas", key=f"{widget_key}_all", on_click=_set_column_selection, args=(widget_key, options))
-        selected = st.multiselect("Colunas visiveis", options, key=widget_key)
-        if col_c.button("Salvar preferencia", key=f"{widget_key}_save"):
-            save_preferencia_colunas(usuario, panel, selected)
-            st.success("Preferencia de colunas salva para este usuario.")
+        with st.form(f"{widget_key}_form"):
+            selected = st.multiselect("Colunas visiveis", options, key=widget_key)
+            col_apply, col_save = st.columns(2)
+            col_apply.form_submit_button("Aplicar", use_container_width=True)
+            if col_save.form_submit_button("Salvar modelo", use_container_width=True):
+                save_preferencia_colunas(usuario, panel, selected)
+                st.success("Preferencia de colunas salva para este usuario.")
     return [column for column in st.session_state.get(widget_key, defaults) if column in options] or defaults
 
 
@@ -2220,18 +2223,10 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("VIAGENS", filtered if not filtered.empty else summary, usuario)
-    mandatory = [
-        "Placa", "motorista", "Origem", "Destino", "Notas",
-        "Previsão de Carga", "Agendamento de Carga", "Chegada Rastreador Carga", "Saida Rastreador Carga", "Tempo Rastreador Carga",
-        "OTS 2", "OTS 3", "Dentro da Regra Carga",
-        "Data Limite", "Agenda GFL", "Chegada Rastreador Descarga", "Saida Rastreador Descarga", "Tempo Rastreador Descarga",
-        "Data Emissao NF", "OTD 1", "OTD 2", "OTD 3",
-        "lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise",
-        "Dentro da Regra", "Correspondência PerformanceRW", "Motivo vínculo PerformanceRW",
-    ]
+    mandatory = ["lcte_id", "Enviada para análise", "Resposta recebida"]
     for suffix in ("Carga", "Descarga"):
-        mandatory.extend(f"{field} {suffix}" for field in ("Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência", "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador"))
-    table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
+        mandatory.extend(f"{field} {suffix}" for field in ("Conferência", "Motivo conferência", "Sem tratativa"))
+    table_columns = list(dict.fromkeys([*visible_columns, *mandatory]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
         "Relatorio com regras",
