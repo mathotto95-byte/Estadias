@@ -2226,6 +2226,11 @@ def render_cross_page(usuario: str) -> None:
     performance_payload = st.session_state.get("performance_result")
     st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}" if performance_payload else st.session_state.get("performance_load_error", "Sem dados de prazos do PerformanceRW."))
     summary = _build_trip_summary_table(_apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)))
+    if performance_payload and not summary.empty:
+        matched = int(summary["Correspondência PerformanceRW"].eq("Exata").sum())
+        st.caption(f"PerformanceRW: {matched} de {len(summary)} viagens vinculadas por NF, placa e chegada GPS.")
+        if matched == 0:
+            st.warning("Nenhuma viagem vinculada ao resultado publicado. Confira a coluna Motivo vínculo PerformanceRW e atualize a análise no PerformanceRW.")
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),
@@ -2254,7 +2259,7 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("VIAGENS", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS, *RULES]
+    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS, *RULES, "Correspondência PerformanceRW", "Motivo vínculo PerformanceRW"]
     for suffix in ("Carga", "Descarga"):
         mandatory.extend(f"{field} {suffix}" for field in ("Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência", "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador", "Chegada Control", "Saida Control", "Tempo Control"))
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))

@@ -57,7 +57,7 @@ def attach(cross, payload):
         for nf in {n.removesuffix(".0").lstrip("0") or "0" for n in re.split(r"[;,/|\s]+", clean(row.get("nf"))) if n}:
             rows.append({"Nota Fiscal": nf, "Placa": plate, "Origem": clean(row.get("origem")), "Destino": clean(row.get("destino")),
                          "_arrival_origin": clean(row.get("chegada_origem")), "_arrival_destination": clean(row.get("chegada_destino")),
-                         "_id": clean(row.get("lcte_id")) or clean(row.get("id"))})
+                         "_trip_key": clean(row.get("chave_viagem")), "_id": clean(row.get("lcte_id")) or clean(row.get("id"))})
     result = []
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -65,8 +65,14 @@ def attach(cross, payload):
     for key, group in frame.drop_duplicates().groupby(["Nota Fiscal", "Placa"], sort=False):
         local = group.iloc[0].to_dict()
         source = records.get(key, {})
-        matching = len(group) == 1 and source.get("Correspondência Estadias") == "Exata"
-        reason = "Sem correspondência exata e única na análise publicada"
+        status = source.get("Correspondência Estadias")
+        compatible = status == "NF + placa exata; viagem duplicada compatível"
+        same_trip = bool(group["_trip_key"].iloc[0]) and group["_trip_key"].nunique() == 1
+        same_arrivals = all(group[column].nunique() == 1 for column in ("_arrival_origin", "_arrival_destination"))
+        matching = bool(source) and ((len(group) == 1 and status == "Exata") or (len(group) > 1 and compatible and same_trip and same_arrivals))
+        reason = ("NF + placa ausentes no resultado publicado" if not source else
+                  "Duplicações da viagem ou chegadas GPS conflitantes" if len(group) > 1 else
+                  f"PerformanceRW: {status or 'sem correspondência exata'}")
         if matching:
             for remote_col, local_col in [("Chegada na Origem", "_arrival_origin"), ("Chegada no Destino", "_arrival_destination")]:
                 remote, current = clean(source.get(remote_col)), local[local_col]
@@ -83,6 +89,7 @@ def attach(cross, payload):
         item.update({r: source[r] if matching else "Sem informação" for r in RULES})
         item["Atendeu todas as regras"] = source["Atendeu todas as regras"] if matching else "Sem informação"
         item["Correspondência"] = "Exata" if matching else "Sem correspondência"
+        item["Motivo do vínculo"] = "" if matching else reason
         item["Data/Hora da última análise"] = payload["analyzed_at"] if matching else ""
         item["Motivo da classificação"] = source.get("Motivo da classificação", "") if matching else reason
         result.append(item)
@@ -92,7 +99,7 @@ def attach(cross, payload):
 def enrich_summary(summary, cross, payload):
     """Exibe resultados publicados, sem recalcular regras nem alterar viagens."""
     result = summary.copy()
-    for field in [*DISPLAY_FIELDS, *RULES]:
+    for field in [*DISPLAY_FIELDS, *RULES, "Correspondência PerformanceRW", "Motivo vínculo PerformanceRW"]:
         result[field] = "Sem informação" if field == "Dentro da Regra" else ""
     if result.empty or not payload:
         return result
@@ -101,6 +108,9 @@ def enrich_summary(summary, cross, payload):
     for index, row in result.iterrows():
         plate = re.sub(r"[^A-Z0-9]", "", clean(row.get("Placa")).upper())
         notes = sorted({n.removesuffix(".0").lstrip("0") or "0" for n in re.split(r"[;,/|\s]+", clean(row.get("Notas"))) if n})
+        matches = [lookup.get((nf, plate), {}) for nf in notes]
+        result.at[index, "Correspondência PerformanceRW"] = "Exata" if matches and all(m.get("Correspondência") == "Exata" for m in matches) else "Sem correspondência"
+        result.at[index, "Motivo vínculo PerformanceRW"] = "; ".join(dict.fromkeys(m.get("Motivo do vínculo") or "NF + placa não localizadas no LCTE atual" for m in matches)) if matches else "NF ausente"
         for field in [*DISPLAY_FIELDS, *RULES]:
             fallback = "Sem informação" if field == "Dentro da Regra" else ""
             values = [(nf, lookup.get((nf, plate), {}).get(field, fallback)) for nf in notes]

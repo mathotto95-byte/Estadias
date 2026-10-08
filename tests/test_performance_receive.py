@@ -26,3 +26,20 @@ class ReceiveTests(unittest.TestCase):
         payload["rows"].append(row)
         with self.assertRaises(ValueError):
             validate(payload)
+
+    def test_compatible_duplicate_trip_retains_rules(self):
+        row = {"Nota Fiscal": "123", "Placa": "ABC1D23", "Atendeu todas as regras": "Sim",
+               "Correspondência Estadias": "NF + placa exata; viagem duplicada compatível",
+               "Chegada na Origem": "2026-10-01 10:00", "Chegada no Destino": "2026-10-03 12:00",
+               **dict.fromkeys(RULES, "Dentro do prazo")}
+        payload = {"schema": "performance_results_v1", "analyzed_at": "2026-10-04T10:00:00-03:00", "sources": {}, "rows": [row]}
+        cross = pd.DataFrame([
+            {"lcte_id": 1, "nf": "123", "placa_norm": "ABC1D23", "chave_viagem": "VIAGEM-1", "chegada_origem": "2026-10-01 10:00", "chegada_destino": "2026-10-03 12:00"},
+            {"lcte_id": 2, "nf": "123", "placa_norm": "ABC1D23", "chave_viagem": "VIAGEM-1", "chegada_origem": "2026-10-01 10:00", "chegada_destino": "2026-10-03 12:00"},
+        ])
+        received = attach(cross, payload)
+        self.assertEqual(received.iloc[0]["OTS 2"], "Dentro do prazo")
+        summary = pd.DataFrame([{"Notas": "123", "Placa": "ABC1D23"}])
+        self.assertEqual(enrich_summary(summary, cross, payload).iloc[0]["OTD 3"], "Dentro do prazo")
+        cross.loc[1, "chave_viagem"] = "VIAGEM-2"
+        self.assertEqual(attach(cross, payload).iloc[0]["OTS 2"], "Sem informação")
