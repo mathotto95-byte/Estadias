@@ -1848,9 +1848,10 @@ def _render_summary_filters(df: pd.DataFrame) -> dict[str, object]:
     return filters
 
 
-def _render_validation_cards(df: pd.DataFrame) -> str:
+def _render_validation_cards(df: pd.DataFrame, situation_card: str = "") -> str:
     active = str(st.session_state.get("estadias_validation_card") or "")
-    unique = df.drop_duplicates("lcte_id") if "lcte_id" in df.columns else df
+    base = _apply_situation_card(df, situation_card)
+    unique = base.drop_duplicates("lcte_id") if "lcte_id" in base.columns else base
     cards = [
         ("LCTE", "Viagens no LCTE", len(unique)),
         ("RASTREADOR", "Com registro no Rastreador", int(unique["encontrou_rastreador"].fillna(0).astype(int).eq(1).sum()) if not unique.empty else 0),
@@ -2166,7 +2167,8 @@ def render_cross_page(usuario: str) -> None:
     }
     filtered_by_fields = _apply_summary_filters(summary, session_filters)
 
-    validation_card = _render_validation_cards(filtered_by_fields)
+    selected_situation = str(st.session_state.get("estadias_situation_card") or "")
+    validation_card = _render_validation_cards(filtered_by_fields, selected_situation)
     filtered_by_validation = _apply_validation_card(filtered_by_fields, validation_card)
     situation_card = _render_situation_cards(filtered_by_validation)
 
@@ -2174,6 +2176,9 @@ def render_cross_page(usuario: str) -> None:
     filtered = _apply_summary_filters(summary, filters)
     filtered = _apply_validation_card(filtered, validation_card)
     filtered = _apply_situation_card(filtered, situation_card)
+    st.caption(f"Exibindo {len(filtered)} de {len(summary)} viagens" + (f" | {situation_card}" if situation_card else ""))
+    if filtered.empty:
+        st.info("Nenhuma viagem corresponde aos filtros selecionados.")
 
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:

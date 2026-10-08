@@ -16,11 +16,24 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _build_cross_summary_table, _build_trip_summary_table, _conference_suggestion, _apply_conference, _apply_situation_card
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _conference_suggestion, _apply_conference, _apply_situation_card
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_cards_filter_combined_trip_rows(self):
+        trips = pd.DataFrame([
+            {"lcte_id": 1, "encontrou_rastreador": 1, "Status Estadia Carga": "ESTADIA", "Status Estadia Descarga": "PENDENTE", "Conferência Carga": "VALIDA", "Conferência Descarga": "A CONFERIR", "Status": "PENDENTE"},
+            {"lcte_id": 2, "encontrou_rastreador": 1, "Status Estadia Carga": "SEM ESTADIA", "Status Estadia Descarga": "ESTADIA", "Conferência Carga": "INVALIDA", "Conferência Descarga": "A CONFERIR", "Status": "CONCLUIDO"},
+            {"lcte_id": 3, "encontrou_rastreador": 0, "Status Estadia Carga": "PENDENTE", "Status Estadia Descarga": "PENDENTE", "Conferência Carga": "A CONFERIR", "Conferência Descarga": "A CONFERIR", "Status": "PENDENTE"},
+        ])
+        self.assertEqual(_apply_situation_card(trips, "ESTADIA")["lcte_id"].tolist(), [1, 2])
+        self.assertEqual(_apply_situation_card(trips, "VALIDA")["lcte_id"].tolist(), [1])
+        self.assertEqual(_apply_situation_card(trips, "INVALIDA")["lcte_id"].tolist(), [2])
+        self.assertEqual(_apply_situation_card(trips, "PENDENTE")["lcte_id"].tolist(), [1, 3])
+        self.assertEqual(_apply_situation_card(trips, "CONCLUIDO")["lcte_id"].tolist(), [2])
+        self.assertEqual(_apply_validation_card(_apply_situation_card(trips, "ESTADIA"), "RASTREADOR")["lcte_id"].tolist(), [1, 2])
+
     def test_trip_summary_keeps_both_stays_on_one_line(self):
         lines = pd.DataFrame([
             {"lcte_id": 1, "Tipo": "ORIGEM", "Notas": "123", "Placa": "ABC1234", "Status": "ESTADIA", "Estadia": "Estadia", "Status Estadia": "ESTADIA", "Conferência": "VALIDA", "Motivo não validada": "", "Motivo conferência": "", "Sem tratativa": False, "Chegada Rastreador": "01/10/2026 10:00", "Saida Rastreador": "02/10/2026 10:00", "Tempo Rastreador": "24:00", "Chegada Control": "", "Saida Control": "", "Tempo Control": "", "Diferenca": "", "Motivo": "", "Concluir": "Concluir", "data_inicio_viagem_referencia": "2026-10-01"},
