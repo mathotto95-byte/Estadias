@@ -1748,6 +1748,31 @@ def _charge_rule_status(row: pd.Series) -> str:
     return "Sem informação"
 
 
+def _gps_permanence_report(trips: pd.DataFrame, cross: pd.DataFrame) -> pd.DataFrame:
+    identity = ["lcte_id", "Notas", "Data Emissao NF", "Placa", "motorista", "Origem", "Destino"]
+    sides = {
+        "Carga": ("origem", "tempo_origem_min", "estadia_carga_min", "franquia_carga_min"),
+        "Descarga": ("destino", "tempo_destino_min", "estadia_descarga_min", "franquia_descarga_min"),
+    }
+    details = {
+        "Pontos GPS": "pontos_{}",
+        "Referências visitadas": "referencias_visitadas_{}",
+        "Blocos identificados": "qtd_blocos_municipio_{}",
+        "Interrupções ignoradas": "interrupcoes_ignoradas_{}",
+        "Confiança (%)": "confianca_permanencia_{}_pct",
+    }
+    report = trips.reindex(columns=identity).copy()
+    source = cross.drop_duplicates("lcte_id").set_index("lcte_id") if "lcte_id" in cross.columns else pd.DataFrame()
+    trip_ids = pd.to_numeric(report["lcte_id"], errors="coerce")
+    for label, (side, raw_field, stay_field, allowance_field) in sides.items():
+        for field in ("Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador", "Status Estadia"):
+            column = f"{field} {label}"
+            report[column] = trips[column].to_numpy() if column in trips.columns else ""
+        for name, field in {"Tempo GPS bruto (min)": raw_field, "Franquia (min)": allowance_field, "Tempo excedente (min)": stay_field, **{name: pattern.format(side) for name, pattern in details.items()}}.items():
+            report[f"{name} {label}"] = source[field].reindex(trip_ids).to_numpy() if field in source.columns else ""
+    return report
+
+
 def _toggle_simple_card(state_key: str, value: str) -> None:
     st.session_state[state_key] = "" if st.session_state.get(state_key) == value else value
 
@@ -2209,17 +2234,17 @@ def render_cross_page(usuario: str) -> None:
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
     table = filtered[[column for column in table_columns if column in filtered.columns]]
     col_b.download_button(
-        "Exportar visualizacao",
-        dataframe_to_excel({"visualizacao": table}),
-        "cruzamento_estadias_visualizacao.xlsx",
+        "Relatorio com regras",
+        dataframe_to_excel({"regras": table}),
+        "estadias_regras.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         disabled=table.empty,
     )
     col_c.download_button(
-        "Exportar completo",
-        dataframe_to_excel({"visualizacao": table, "completo": filtered, "detalhamento_viagem": _with_estadia_display_columns(cross)}),
-        "cruzamento_estadias_completo.xlsx",
+        "Permanencia GPS",
+        dataframe_to_excel({"permanencia_gps": _gps_permanence_report(filtered, cross)}),
+        "estadias_permanencia_gps.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         disabled=filtered.empty,

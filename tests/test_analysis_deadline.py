@@ -16,11 +16,22 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _gps_permanence_report
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_gps_report_keeps_loading_and_unloading_on_one_filtered_row(self):
+        trips = pd.DataFrame([{"lcte_id": 2, "Notas": "456", "Placa": "ABC1234", "Chegada Rastreador Carga": "01/10/2026 08:00", "Tempo Rastreador Carga": "26:00", "Chegada Rastreador Descarga": "03/10/2026 09:00", "Tempo Rastreador Descarga": "28:00"}])
+        cross = pd.DataFrame([{"lcte_id": 1, "pontos_origem": 99}, {"lcte_id": 2, "pontos_origem": 12, "pontos_destino": 16, "referencias_visitadas_origem": "Patio A", "franquia_carga_min": 1440}])
+        report = _gps_permanence_report(trips, cross)
+        self.assertEqual(len(report), 1)
+        self.assertEqual(report.iloc[0]["Notas"], "456")
+        self.assertEqual(report.iloc[0]["Pontos GPS Carga"], 12)
+        self.assertEqual(report.iloc[0]["Pontos GPS Descarga"], 16)
+        self.assertEqual(report.iloc[0]["Referências visitadas Carga"], "Patio A")
+        self.assertLess(report.columns.get_loc("Tempo Rastreador Carga"), report.columns.get_loc("Chegada Rastreador Descarga"))
+
     def test_charge_rule_uses_only_ots_2_and_3(self):
         self.assertEqual(_charge_rule_status(pd.Series({"OTS 2": "Dentro do prazo", "OTS 3": "Dentro do prazo", "OTD 1": "Fora do prazo"})), "Sim")
         self.assertEqual(_charge_rule_status(pd.Series({"OTS 2": "Fora do prazo", "OTS 3": "Dentro do prazo"})), "Não")
