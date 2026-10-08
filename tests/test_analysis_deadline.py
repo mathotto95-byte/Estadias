@@ -16,11 +16,16 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _conference_suggestion, _apply_conference, _apply_situation_card
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_charge_rule_uses_only_ots_2_and_3(self):
+        self.assertEqual(_charge_rule_status(pd.Series({"OTS 2": "Dentro do prazo", "OTS 3": "Dentro do prazo", "OTD 1": "Fora do prazo"})), "Sim")
+        self.assertEqual(_charge_rule_status(pd.Series({"OTS 2": "Fora do prazo", "OTS 3": "Dentro do prazo"})), "Não")
+        self.assertEqual(_charge_rule_status(pd.Series({"OTS 2": "Dentro do prazo", "OTS 3": "Sem informação"})), "Sem informação")
+
     def test_cards_filter_combined_trip_rows(self):
         trips = pd.DataFrame([
             {"lcte_id": 1, "encontrou_rastreador": 1, "Status Estadia Carga": "ESTADIA", "Status Estadia Descarga": "PENDENTE", "Conferência Carga": "VALIDA", "Conferência Descarga": "A CONFERIR", "Status": "PENDENTE"},

@@ -851,11 +851,13 @@ PANEL_DEFAULT_COLUMNS = {
         "Concluir",
     ],
     "VIAGENS": [
-        "Notas", "Data Emissao NF", "Placa", "motorista", "Origem", "Destino",
-        "Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL",
-        "OTS 2", "OTS 3", "OTD 1", "OTD 2", "OTD 3",
+        "Placa", "motorista", "Origem", "Destino", "Notas",
+        "Previsão de Carga", "Agendamento de Carga",
         "Chegada Rastreador Carga", "Saida Rastreador Carga", "Tempo Rastreador Carga",
+        "OTS 2", "OTS 3", "Dentro da Regra Carga",
+        "Data Limite", "Agenda GFL",
         "Chegada Rastreador Descarga", "Saida Rastreador Descarga", "Tempo Rastreador Descarga",
+        "Data Emissao NF", "OTD 1", "OTD 2", "OTD 3",
         "Status Estadia Carga", "Status Estadia Descarga",
         "Conferência Carga", "Conferência Descarga",
         "Relatorio Rastreador",
@@ -1737,6 +1739,15 @@ def _build_trip_summary_table(lines: pd.DataFrame) -> pd.DataFrame:
     return result.drop(columns=[*side_fields, "Tipo", "Conferência manual", "Motivo manual"], errors="ignore")
 
 
+def _charge_rule_status(row: pd.Series) -> str:
+    rules = [str(row.get(field) or "").strip() for field in ("OTS 2", "OTS 3")]
+    if any("Fora do prazo" in value for value in rules):
+        return "Não"
+    if all(value == "Dentro do prazo" for value in rules):
+        return "Sim"
+    return "Sem informação"
+
+
 def _toggle_simple_card(state_key: str, value: str) -> None:
     st.session_state[state_key] = "" if st.session_state.get(state_key) == value else value
 
@@ -2122,7 +2133,7 @@ def render_cross_page(usuario: str) -> None:
     else:
         cross = read_cross(200000)
 
-    from estadias_app.performance import receive, enrich_summary, DISPLAY_FIELDS, RULES
+    from estadias_app.performance import receive, enrich_summary
     if not st.session_state.get("performance_load_attempted"):
         st.session_state["performance_load_attempted"] = True
         try:
@@ -2141,6 +2152,7 @@ def render_cross_page(usuario: str) -> None:
     else:
         st.error(st.session_state.get("performance_load_error", "Resultado PerformanceRW não carregado. Clique em Atualizar PerformanceRW."))
     summary = _build_trip_summary_table(_apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)))
+    summary["Dentro da Regra Carga"] = summary.apply(_charge_rule_status, axis=1) if not summary.empty else pd.Series(dtype=str)
     if performance_payload and not summary.empty:
         matched = int(summary["Correspondência PerformanceRW"].eq("Exata").sum())
         partial = int(summary["Correspondência PerformanceRW"].eq("Parcial").sum())
@@ -2183,7 +2195,15 @@ def render_cross_page(usuario: str) -> None:
     col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
     with col_a:
         visible_columns = _configured_columns("VIAGENS", filtered if not filtered.empty else summary, usuario)
-    mandatory = ["lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise", *DISPLAY_FIELDS, *RULES, "Correspondência PerformanceRW", "Motivo vínculo PerformanceRW"]
+    mandatory = [
+        "Placa", "motorista", "Origem", "Destino", "Notas",
+        "Previsão de Carga", "Agendamento de Carga", "Chegada Rastreador Carga", "Saida Rastreador Carga", "Tempo Rastreador Carga",
+        "OTS 2", "OTS 3", "Dentro da Regra Carga",
+        "Data Limite", "Agenda GFL", "Chegada Rastreador Descarga", "Saida Rastreador Descarga", "Tempo Rastreador Descarga",
+        "Data Emissao NF", "OTD 1", "OTD 2", "OTD 3",
+        "lcte_id", "Enviada para análise", "Enviada em", "Resposta recebida", "Respondida em", "Prazo resposta", "Situação análise",
+        "Dentro da Regra", "Correspondência PerformanceRW", "Motivo vínculo PerformanceRW",
+    ]
     for suffix in ("Carga", "Descarga"):
         mandatory.extend(f"{field} {suffix}" for field in ("Status Estadia", "Conferência", "Motivo não validada", "Motivo conferência", "Sem tratativa", "Chegada Rastreador", "Saida Rastreador", "Tempo Rastreador"))
     table_columns = list(dict.fromkeys([*mandatory, *visible_columns]))
