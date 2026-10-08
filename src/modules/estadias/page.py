@@ -2228,9 +2228,14 @@ def render_cross_page(usuario: str) -> None:
     summary = _build_trip_summary_table(_apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)))
     if performance_payload and not summary.empty:
         matched = int(summary["Correspondência PerformanceRW"].eq("Exata").sum())
-        st.caption(f"PerformanceRW: {matched} de {len(summary)} viagens vinculadas por NF, placa e chegada GPS.")
-        if matched == 0:
-            st.warning("Nenhuma viagem vinculada ao resultado publicado. Confira a coluna Motivo vínculo PerformanceRW e atualize a análise no PerformanceRW.")
+        partial = int(summary["Correspondência PerformanceRW"].eq("Parcial").sum())
+        st.caption(f"PerformanceRW: {matched} viagem(ns) com GPS atual; {partial} com vínculo parcial; {len(summary) - matched - partial} sem vínculo.")
+        if all(row.get("OTD 1") == "Sem informação" for row in performance_payload.get("rows", [])):
+            st.info("OTD 1 não foi calculado no resultado publicado pelo PerformanceRW. Verifique Data/Hora do Registro OTS/OTD e Data Emissão NF na origem e publique nova análise.")
+        if partial:
+            st.warning("Há chegadas GPS diferentes do resultado publicado. OTS 3 e OTD 3 só aparecem quando o respectivo horário coincide. Reimporte o backup atual de Estadias no PerformanceRW, analise e publique novamente.")
+        elif matched == 0:
+            st.warning("Nenhuma viagem vinculada ao resultado publicado. Confira a coluna Motivo vínculo PerformanceRW.")
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),

@@ -14,6 +14,14 @@ def clean(value):
     return "" if value is None or pd.isna(value) else str(value).strip()
 
 
+def _same_arrival(remote, current):
+    remote, current = clean(remote), clean(current)
+    if remote == current:
+        return True
+    a, b = pd.to_datetime(remote, errors="coerce"), pd.to_datetime(current, errors="coerce")
+    return bool(pd.notna(a) and pd.notna(b) and a == b)
+
+
 def receive():
     import streamlit as st
     from estadias_app.github_backup import github_settings, _download_text
@@ -63,36 +71,29 @@ def attach(cross, payload):
     if frame.empty:
         return frame
     for key, group in frame.drop_duplicates().groupby(["Nota Fiscal", "Placa"], sort=False):
-        local = group.iloc[0].to_dict()
         source = records.get(key, {})
         status = source.get("Correspondência Estadias")
-        compatible = status == "NF + placa exata; viagem duplicada compatível"
+        compatible = status in {"Exata", "NF + placa exata; viagem duplicada compatível"}
         same_trip = bool(group["_trip_key"].iloc[0]) and group["_trip_key"].nunique() == 1
-        same_arrivals = all(group[column].nunique() == 1 for column in ("_arrival_origin", "_arrival_destination"))
-        matching = bool(source) and ((len(group) == 1 and status == "Exata") or (len(group) > 1 and compatible and same_trip and same_arrivals))
-        reason = ("NF + placa ausentes no resultado publicado" if not source else
-                  "Duplicações da viagem ou chegadas GPS conflitantes" if len(group) > 1 else
-                  f"PerformanceRW: {status or 'sem correspondência exata'}")
-        if matching:
-            for remote_col, local_col in [("Chegada na Origem", "_arrival_origin"), ("Chegada no Destino", "_arrival_destination")]:
-                remote, current = clean(source.get(remote_col)), local[local_col]
-                if remote == current:
-                    continue
-                a, b = pd.to_datetime(remote, errors="coerce"), pd.to_datetime(current, errors="coerce")
-                if pd.isna(a) or pd.isna(b) or a != b:
-                    matching = False
-                    reason = "Dados do Estadias mudaram após a análise; sincronize e publique novamente"
-                    break
-        item = {k: v for k, v in local.items() if not k.startswith("_")}
-        item.update({field: clean(source.get(field)) if matching else "" for field in SCHEDULE_FIELDS})
-        item["Dentro da Regra"] = source["Atendeu todas as regras"] if matching else "Sem informação"
-        item.update({r: source[r] if matching else "Sem informação" for r in RULES})
-        item["Atendeu todas as regras"] = source["Atendeu todas as regras"] if matching else "Sem informação"
-        item["Correspondência"] = "Exata" if matching else "Sem correspondência"
-        item["Motivo do vínculo"] = "" if matching else reason
-        item["Data/Hora da última análise"] = payload["analyzed_at"] if matching else ""
-        item["Motivo da classificação"] = source.get("Motivo da classificação", "") if matching else reason
-        result.append(item)
+        linked = bool(source) and compatible and (len(group) == 1 or same_trip)
+        for local in group.to_dict("records"):
+            origin_current = linked and _same_arrival(source.get("Chegada na Origem"), local["_arrival_origin"])
+            destination_current = linked and _same_arrival(source.get("Chegada no Destino"), local["_arrival_destination"])
+            matching = origin_current and destination_current
+            reason = ("NF + placa ausentes no resultado publicado" if not source else
+                      "NF + placa identificam viagens diferentes; vínculo ambíguo" if not linked else
+                      "Chegada GPS alterada desde a publicação: reimporte o backup atual no PerformanceRW, analise e publique novamente")
+            item = {k: v for k, v in local.items() if not k.startswith("_")}
+            item["lcte_id"] = local["_id"]
+            item.update({field: clean(source.get(field)) if linked else "" for field in SCHEDULE_FIELDS})
+            item["Dentro da Regra"] = source["Atendeu todas as regras"] if matching else "Sem informação"
+            item.update({r: source[r] if linked and (r in {"OTS 2", "OTD 1", "OTD 2"} or (r == "OTS 3" and origin_current) or (r == "OTD 3" and destination_current)) else "Sem informação" for r in RULES})
+            item["Atendeu todas as regras"] = source["Atendeu todas as regras"] if matching else "Sem informação"
+            item["Correspondência"] = "Exata" if matching else ("Parcial" if linked else "Sem correspondência")
+            item["Motivo do vínculo"] = "" if matching else reason
+            item["Data/Hora da última análise"] = payload["analyzed_at"] if matching else ""
+            item["Motivo da classificação"] = source.get("Motivo da classificação", "") if matching else reason
+            result.append(item)
     return pd.DataFrame(result)
 
 
@@ -104,16 +105,19 @@ def enrich_summary(summary, cross, payload):
     if result.empty or not payload:
         return result
     received = attach(cross, payload)
-    lookup = {(r["Nota Fiscal"], r["Placa"]): r for r in received.to_dict("records")}
+    lookup = {(r["Nota Fiscal"], r["Placa"], r["lcte_id"]): r for r in received.to_dict("records")}
+    fallback_lookup = {(r["Nota Fiscal"], r["Placa"]): r for r in received.to_dict("records")}
     for index, row in result.iterrows():
         plate = re.sub(r"[^A-Z0-9]", "", clean(row.get("Placa")).upper())
         notes = sorted({n.removesuffix(".0").lstrip("0") or "0" for n in re.split(r"[;,/|\s]+", clean(row.get("Notas"))) if n})
-        matches = [lookup.get((nf, plate), {}) for nf in notes]
-        result.at[index, "Correspondência PerformanceRW"] = "Exata" if matches and all(m.get("Correspondência") == "Exata" for m in matches) else "Sem correspondência"
+        trip_id = clean(row.get("lcte_id"))
+        matches = [lookup.get((nf, plate, trip_id), fallback_lookup.get((nf, plate), {}) if not trip_id else {}) for nf in notes]
+        result.at[index, "Correspondência PerformanceRW"] = ("Exata" if matches and all(m.get("Correspondência") == "Exata" for m in matches) else
+                                                               "Parcial" if matches and all(m.get("Correspondência") in {"Exata", "Parcial"} for m in matches) else "Sem correspondência")
         result.at[index, "Motivo vínculo PerformanceRW"] = "; ".join(dict.fromkeys(m.get("Motivo do vínculo") or "NF + placa não localizadas no LCTE atual" for m in matches)) if matches else "NF ausente"
         for field in [*DISPLAY_FIELDS, *RULES]:
             fallback = "Sem informação" if field == "Dentro da Regra" else ""
-            values = [(nf, lookup.get((nf, plate), {}).get(field, fallback)) for nf in notes]
+            values = [(nf, match.get(field, fallback)) for nf, match in zip(notes, matches)]
             unique = {value for _, value in values}
             if len(unique) == 1:
                 result.at[index, field] = next(iter(unique))
