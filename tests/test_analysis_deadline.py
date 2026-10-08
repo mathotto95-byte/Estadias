@@ -19,11 +19,41 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DatabaseConfig, DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _configured_columns, _gps_permanence_report
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _configured_columns, _gps_permanence_report, _gps_verification_table
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_gps_verification_starts_from_every_lcte_trip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "gps.sqlite"
+            with closing(sqlite3.connect(path)) as raw:
+                raw.row_factory = sqlite3.Row
+                create_modular_tables(DbConnection(raw, "sqlite"))
+                raw.execute("insert into mod_estadias_lcte_normalizada (id, nf, placa_norm) values (1, '100', 'ABC1234'), (2, '200', 'DEF5678'), (3, '300', 'GHI9012')")
+                raw.execute("insert into mod_estadias_cruzamento_inicial (lcte_id, encontrou_rastreador, encontrou_origem, encontrou_destino) values (1, 1, 1, 1), (2, 0, 0, 0)")
+                raw.execute("insert into mod_estadias_posicoes_resultado (lcte_id, tipo_estadia) values (1, 'ORIGEM')")
+                raw.commit()
+            config = DatabaseConfig(db_type="sqlite", sqlite_path=path)
+            with patch("src.database.connection.get_database_config", return_value=config):
+                result = _gps_verification_table(repository.read_gps_verification())
+        by_id = result.set_index("lcte_id")
+        self.assertEqual(len(result), 3)
+        self.assertEqual(by_id.at[1, "Situação GPS"], "Carga e descarga")
+        self.assertEqual(by_id.at[1, "posicoes_carga"], 1)
+        self.assertEqual(by_id.at[2, "Situação GPS"], "Sem GPS no cálculo")
+        self.assertEqual(by_id.at[3, "Situação GPS"], "Não calculada")
+
+    def test_gps_verification_distinguishes_partial_locations(self):
+        rows = pd.DataFrame([
+            {"resultado_id": 1, "encontrou_rastreador": 1, "encontrou_origem": 1, "encontrou_destino": 0, "posicoes_carga": 2, "posicoes_descarga": 0},
+            {"resultado_id": 2, "encontrou_rastreador": 1, "encontrou_origem": 0, "encontrou_destino": 1, "posicoes_carga": 0, "posicoes_descarga": 1},
+            {"resultado_id": 3, "encontrou_rastreador": 1, "encontrou_origem": 0, "encontrou_destino": 0, "posicoes_carga": 0, "posicoes_descarga": 0},
+        ])
+        verified = _gps_verification_table(rows)
+        self.assertEqual(verified["Situação GPS"].tolist(), ["Só carga", "Só descarga", "GPS sem local identificado"])
+        self.assertEqual(verified["Evidência disponível"].tolist(), ["Posições resumidas salvas", "Posições resumidas salvas", "Somente resultado"])
+
     def test_save_model_button_persists_selected_columns(self):
         ui = MagicMock()
         ui.session_state = {}

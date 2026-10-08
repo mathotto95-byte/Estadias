@@ -31,6 +31,7 @@ from src.modules.estadias.repository import (
     read_auditoria,
     read_config,
     read_cross,
+    read_gps_verification,
     read_lcte,
     read_lcte_observations,
     read_locais,
@@ -40,6 +41,7 @@ from src.modules.estadias.repository import (
     read_estadia_positions_period,
     _sample_positions_for_result,
     read_rastreador_period,
+    read_rastreador_period_for_plates,
     reabrir_conclusao,
     sample,
     save_conclusao,
@@ -53,7 +55,7 @@ from src.modules.estadias.repository import (
     select_distinct,
     table_count,
 )
-from src.modules.estadias.service import atualizar_cruzamento, atualizar_cruzamento_incremental, atualizar_cruzamento_incremental_placas, dashboard_metrics, top_indicators, validation_metrics
+from src.modules.estadias.service import _trip_plate_candidates, atualizar_cruzamento, atualizar_cruzamento_incremental, atualizar_cruzamento_incremental_placas, dashboard_metrics, top_indicators, validation_metrics
 from src.reports.exporter import dataframe_to_excel
 from src.normalizers.fields import normalize_column_name
 from src.modules.estadias.normalizers import monitoramento_da_observacao
@@ -1774,6 +1776,116 @@ def _gps_permanence_report(trips: pd.DataFrame, cross: pd.DataFrame) -> pd.DataF
         for name, field in {"Tempo GPS bruto (min)": raw_field, "Franquia (min)": allowance_field, "Tempo excedente (min)": stay_field, **{name: pattern.format(side) for name, pattern in details.items()}}.items():
             report[f"{name} {label}"] = source[field].reindex(trip_ids).to_numpy() if field in source.columns else ""
     return report
+
+
+def _gps_verification_table(trips: pd.DataFrame) -> pd.DataFrame:
+    if trips.empty:
+        return trips.copy()
+    result = trips.copy()
+    gps = pd.to_numeric(result["encontrou_rastreador"], errors="coerce").fillna(0).eq(1)
+    origin = pd.to_numeric(result["encontrou_origem"], errors="coerce").fillna(0).eq(1)
+    destination = pd.to_numeric(result["encontrou_destino"], errors="coerce").fillna(0).eq(1)
+    result["Situação GPS"] = "Sem GPS no cálculo"
+    result.loc[result["resultado_id"].isna(), "Situação GPS"] = "Não calculada"
+    result.loc[gps & origin & destination, "Situação GPS"] = "Carga e descarga"
+    result.loc[gps & origin & ~destination, "Situação GPS"] = "Só carga"
+    result.loc[gps & ~origin & destination, "Situação GPS"] = "Só descarga"
+    result.loc[gps & ~origin & ~destination, "Situação GPS"] = "GPS sem local identificado"
+    saved = pd.to_numeric(result["posicoes_carga"], errors="coerce").fillna(0) + pd.to_numeric(result["posicoes_descarga"], errors="coerce").fillna(0)
+    result["Evidência disponível"] = "Sem posições salvas"
+    result.loc[result["resultado_id"].notna(), "Evidência disponível"] = "Somente resultado"
+    result.loc[saved.gt(0), "Evidência disponível"] = "Posições resumidas salvas"
+    return result
+
+
+def _toggle_gps_filter(status: str) -> None:
+    current = st.session_state.get("gps_verification_status", "")
+    st.session_state["gps_verification_status"] = "" if current == status else status
+
+
+def render_gps_verification_page() -> None:
+    st.title("Conferência GPS")
+    trips = _gps_verification_table(read_gps_verification())
+    if trips.empty:
+        st.info("Nenhuma viagem LCTE importada.")
+        return
+    raw_available = not read_rastreador(limit=1).empty
+    if not raw_available:
+        st.warning("Posições brutas não estão no banco. A conferência usa o resultado salvo e as posições resumidas; para recalcular, reimporte o CSV do rastreador.")
+    else:
+        st.caption("Posições brutas disponíveis no banco para consulta por viagem.")
+
+    dates = pd.to_datetime(trips["data_operacao"], errors="coerce")
+    years = sorted(dates.dt.year.dropna().astype(int).unique().tolist(), reverse=True)
+    col_plate, col_nf, col_year, col_month = st.columns(4)
+    plate = col_plate.text_input("Placa", key="gps_verification_plate").strip().upper()
+    nf = col_nf.text_input("Nota fiscal", key="gps_verification_nf").strip()
+    year = col_year.selectbox("Ano", ["Todos", *years], key="gps_verification_year")
+    month = col_month.selectbox("Mês", ["Todos", *range(1, 13)], format_func=lambda value: value if value == "Todos" else f"{value:02d}", key="gps_verification_month")
+    filtered = trips
+    if plate:
+        filtered = filtered[filtered["placa_norm"].fillna("").astype(str).str.contains(plate, regex=False)]
+    if nf:
+        filtered = filtered[filtered["nf"].fillna("").astype(str).str.contains(nf, regex=False)]
+    if year != "Todos":
+        filtered = filtered[dates.loc[filtered.index].dt.year.eq(year)]
+    if month != "Todos":
+        filtered = filtered[dates.loc[filtered.index].dt.month.eq(month)]
+
+    categories = ["Todas", "Carga e descarga", "Só carga", "Só descarga", "GPS sem local identificado", "Sem GPS no cálculo", "Não calculada"]
+    cols = st.columns(len(categories))
+    active = st.session_state.get("gps_verification_status", "")
+    for col, label in zip(cols, categories):
+        count = len(filtered) if label == "Todas" else int(filtered["Situação GPS"].eq(label).sum())
+        col.button(f"{label}\n{count}", key=f"gps_verification_card_{label}", type="primary" if active == label else "secondary", use_container_width=True, on_click=_toggle_gps_filter, args=(label,))
+    if active and active != "Todas":
+        filtered = filtered[filtered["Situação GPS"].eq(active)]
+    st.caption(f"Exibindo {len(filtered)} de {len(trips)} viagens LCTE")
+
+    columns = {
+        "nf": "Nota fiscal", "cte": "CT-e", "placa_norm": "Placa", "placas_composicao": "Placas composição", "motorista": "Motorista",
+        "data_operacao": "Data da viagem", "data_emissao": "Data emissão LCTE", "origem": "Origem", "destino": "Destino",
+        "Situação GPS": "Situação GPS", "Evidência disponível": "Evidência disponível",
+        "qtd_registros_rastreador": "Pontos na janela", "primeira_data_rastreador": "Primeira posição", "ultima_data_rastreador": "Última posição",
+        "chegada_origem": "Chegada carga", "saida_origem": "Saída carga", "tempo_origem_min": "Tempo carga (min)", "posicoes_carga": "Posições salvas carga",
+        "chegada_destino": "Chegada descarga", "saida_destino": "Saída descarga", "tempo_destino_min": "Tempo descarga (min)", "posicoes_descarga": "Posições salvas descarga",
+        "motivo_falha": "Motivo", "atualizado_em": "Cálculo atualizado em", "lcte_id": "ID viagem",
+    }
+    report = filtered[list(columns)].rename(columns=columns).copy()
+    for column in ("Data da viagem", "Data emissão LCTE", "Primeira posição", "Última posição", "Chegada carga", "Saída carga", "Chegada descarga", "Saída descarga", "Cálculo atualizado em"):
+        report[column] = report[column].map(_format_datetime_display)
+    st.download_button("Exportar conferência GPS", dataframe_to_excel({"conferencia_gps": report}), "conferencia_gps_viagens.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", disabled=report.empty)
+    render_dataframe(report, height=620, max_rows=2000)
+    if filtered.empty:
+        return
+    choices = {f"NF {row.nf or '-'} | {row.placa_norm or '-'} | viagem {row.lcte_id}": row for row in filtered.itertuples(index=False)}
+    with st.form("gps_verification_positions_form"):
+        selected = st.selectbox("Viagem para conferir posições", list(choices))
+        include_raw = st.checkbox("Consultar também posições brutas na janela", disabled=not raw_available)
+        inspect = st.form_submit_button("Ver posições da viagem")
+    if inspect:
+        trip = choices[selected]
+        saved = pd.concat(
+            [read_estadia_positions_period(int(trip.lcte_id), tipo, limit=3000) for tipo in ("ORIGEM", "DESTINO")],
+            ignore_index=True,
+        )
+        if saved.empty:
+            st.info("Não há posições resumidas preservadas para esta viagem.")
+        else:
+            positions = saved.reindex(columns=["tipo_estadia", "data_hora", "cidade", "uf_posicao", "velocidade", "fonte"])
+            positions["data_hora"] = positions["data_hora"].map(_format_datetime_display)
+            st.caption(f"{len(positions)} posições resumidas preservadas")
+            render_dataframe(positions, height=360, max_rows=6000)
+        if include_raw:
+            if pd.isna(trip.inicio_janela) or pd.isna(trip.fim_janela):
+                st.warning("Esta viagem não tem janela GPS salva para consultar posições brutas.")
+            else:
+                plates = _trip_plate_candidates(pd.Series({"placa_norm": trip.placa_norm, "placas_composicao": trip.placas_composicao}))
+                raw = read_rastreador_period_for_plates(plates, str(trip.inicio_janela), str(trip.fim_janela), limit=3000)
+                st.caption(f"{len(raw)} posições brutas encontradas na janela; consulta limitada a 3.000 registros")
+                raw_view = raw.reindex(columns=["data_hora", "cidade", "uf", "cliente_referencia", "referencia", "velocidade", "latitude", "longitude"])
+                raw_view["data_hora"] = raw_view["data_hora"].map(_format_datetime_display)
+                render_dataframe(raw_view, height=360, max_rows=3000)
 
 
 def _toggle_simple_card(state_key: str, value: str) -> None:

@@ -35,6 +35,7 @@ from src.database.connection import get_connection
 from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_cross_page,
+    render_gps_verification_page,
     render_imports_page,
     render_performance_rw_page,
 )
@@ -46,6 +47,7 @@ from src.utils.rw_theme import apply_theme, render_brand_header, render_login_he
 MENU = [
     "Importação",
     "Estadias",
+    "Conferência GPS",
     "PerformanceRW",
     "Backup do Banco",
 ]
@@ -404,6 +406,8 @@ def main() -> None:
         render_imports_page(username, "ADMIN")
     elif page == "Estadias":
         render_cross_page(username)
+    elif page == "Conferência GPS":
+        render_gps_verification_page()
     elif page == "PerformanceRW":
         render_performance_rw_page()
     elif page == "Backup do Banco":

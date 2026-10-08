@@ -722,6 +722,41 @@ def read_cross(limit: int = 1000) -> pd.DataFrame:
     return rows.drop(columns=legacy)
 
 
+@st.cache_data(ttl=_CACHE_TTL_SEGUNDOS, show_spinner=False)
+def read_gps_verification() -> pd.DataFrame:
+    trips = read_sql(f"""
+        select l.id as lcte_id, l.nf, l.cte, l.placa_norm, l.placas_composicao, l.motorista,
+               l.data_operacao, l.data_emissao, l.origem, l.destino,
+               c.id as resultado_id, c.encontrou_rastreador, c.encontrou_origem,
+               c.encontrou_destino, c.qtd_registros_rastreador,
+               c.primeira_data_rastreador, c.ultima_data_rastreador,
+               c.chegada_origem, c.saida_origem, c.tempo_origem_min,
+               c.chegada_destino, c.saida_destino, c.tempo_destino_min,
+               c.inicio_janela, c.fim_janela, c.motivo_falha, c.atualizado_em
+        from {LCTE_NORMALIZED_TABLE} l
+        left join (
+            select lcte_id, max(id) as id from {CROSS_TABLE} group by lcte_id
+        ) latest on latest.lcte_id = l.id
+        left join {CROSS_TABLE} c on c.id = latest.id
+        order by l.id desc
+    """)
+    if trips.empty:
+        return trips
+    positions = read_sql(f"""
+        select lcte_id, upper(tipo_estadia) as tipo, count(*) as quantidade
+        from {ESTADIA_POSITIONS_TABLE}
+        group by lcte_id, upper(tipo_estadia)
+    """) if table_exists(ESTADIA_POSITIONS_TABLE) else pd.DataFrame()
+    if positions.empty:
+        trips["posicoes_carga"] = 0
+        trips["posicoes_descarga"] = 0
+    else:
+        counts = positions.pivot_table(index="lcte_id", columns="tipo", values="quantidade", aggfunc="sum", fill_value=0)
+        for tipo, column in (("ORIGEM", "posicoes_carga"), ("DESTINO", "posicoes_descarga")):
+            trips[column] = trips["lcte_id"].map(counts[tipo]).fillna(0).astype(int) if tipo in counts else 0
+    return trips
+
+
 def save_analysis_flags(lcte_id: int, sent: bool, replied: bool, usuario: str) -> None:
     if int(lcte_id) <= 0 or (replied and not sent):
         raise ValueError("Viagem ou marcacao de analise invalida.")
