@@ -2379,7 +2379,7 @@ def render_cross_page(usuario: str) -> None:
     editable = {"Enviada para análise", "Resposta recebida", *(f"{field} {suffix}" for suffix in ("Carga", "Descarga") for field in ("Sem tratativa", "Conferência", "Motivo conferência"))}
     editor_table = table.head(500)
     editor_key = "estadias_analise_editor_" + hashlib.sha1(
-        filtered.loc[editor_table.index, ["lcte_id", "Enviada para análise", "Resposta recebida", *(f"{field} {suffix}" for suffix in ("Carga", "Descarga") for field in ("Sem tratativa", "Conferência", "Motivo conferência"))]].to_csv(index=False).encode("utf-8")
+        editor_table.reindex(columns=["lcte_id", "Enviada para análise", "Resposta recebida", *(f"{field} {suffix}" for suffix in ("Carga", "Descarga") for field in ("Sem tratativa", "Conferência", "Motivo conferência"))]).to_csv(index=False).encode("utf-8")
     ).hexdigest()[:12]
     if len(table) > len(editor_table):
         st.caption(f"Exibindo {len(editor_table)} de {len(table)} linhas para edição. Refine os filtros para localizar outras viagens.")
