@@ -10,10 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from estadias_app import performance as performance_results
-if not hasattr(performance_results, "enrich_summary"):
-    from importlib import reload
-    reload(performance_results)
+from estadias_app import ots_otd
 
 from estadias_app.github_backup import backup_to_github
 from src.dashboards.components import metric_grid, render_dataframe
@@ -33,7 +30,6 @@ from src.modules.estadias.repository import (
     read_cross,
     read_gps_verification,
     read_lcte,
-    read_lcte_observations,
     read_locais,
     read_parametros,
     read_preferencia_colunas,
@@ -57,8 +53,6 @@ from src.modules.estadias.repository import (
 )
 from src.modules.estadias.service import _trip_plate_candidates, atualizar_cruzamento, atualizar_cruzamento_incremental, atualizar_cruzamento_incremental_placas, dashboard_metrics, top_indicators, validation_metrics
 from src.reports.exporter import dataframe_to_excel
-from src.normalizers.fields import normalize_column_name
-from src.modules.estadias.normalizers import monitoramento_da_observacao
 from src.utils.timezone import brasilia_now_iso
 
 
@@ -2128,71 +2122,28 @@ def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
         st.json(row.get("log_processamento_json") or "[]")
 
 
-def _performance_fields_from_lcte_json(raw_json: object) -> tuple[str, str]:
-    try:
-        fields = json.loads(str(raw_json or "{}"))
-    except (ValueError, TypeError):
-        return "", ""
-    if not isinstance(fields, dict):
-        return "", ""
-    monitoring = municipality = ""
-    for name, value in fields.items():
-        normalized = normalize_column_name(name)
-        if normalized in {"observacao", "obs", "comentario"}:
-            monitoring = monitoramento_da_observacao(value)
-        elif normalized in {"municipio_da_cobranca", "municipio_cobranca"}:
-            municipality = str(value or "").strip()
-    return monitoring, municipality
-
-
-def _performance_rw_table(cross: pd.DataFrame, observations: pd.DataFrame) -> pd.DataFrame:
-    columns = ["Status Estadia", "Notas", "Data Emissão NF", "Placa", "Motorista", "Origem", "Destino", "Município da Cobrança", "Tipo", "Chegada Rastreador", "Saída Rastreador", "Monitoramento"]
-    if cross.empty:
-        return pd.DataFrame(columns=columns)
-    summary = _build_cross_summary_table(cross)
-    summary = summary[summary["Status Estadia"].eq("ESTADIA")].copy()
-    fields = {int(row["id"]): _performance_fields_from_lcte_json(row.get("dados_json")) for row in observations.to_dict("records")}
-    return pd.DataFrame({
-        "Status Estadia": summary["Status Estadia"],
-        "Notas": summary["Notas"].fillna(""),
-        "Data Emissão NF": summary["Data Emissao NF"].fillna(""),
-        "Placa": summary["Placa"].fillna(""),
-        "Motorista": summary["motorista"].fillna(""),
-        "Origem": summary["Origem"].fillna(""),
-        "Destino": summary["Destino"].fillna(""),
-        "Município da Cobrança": summary["lcte_id"].map(lambda row_id: fields.get(_safe_int_value(row_id), ("", ""))[1]),
-        "Tipo": summary["Tipo"].fillna(""),
-        "Chegada Rastreador": summary["Chegada Rastreador"].fillna(""),
-        "Saída Rastreador": summary["Saida Rastreador"].fillna(""),
-        "Monitoramento": summary["monitoramento"].where(summary["monitoramento"].fillna("").ne(""), summary["lcte_id"].map(lambda row_id: fields.get(_safe_int_value(row_id), ("", ""))[0])).fillna(""),
-    }, columns=columns)
-
-
-def render_performance_rw_page() -> None:
-    from estadias_app.performance import receive, attach
-    st.title("PerformanceRW")
+def render_ots_otd_page() -> None:
+    st.title("OTS e OTD")
     cross = read_cross(200000)
     if cross.empty:
         st.info("Nenhuma viagem calculada em Estadias.")
         return
-    st.caption("Resultados calculados exclusivamente no PerformanceRW. Associação exata por NF + placa; nenhuma estadia é alterada.")
-    if st.button("Atualizar resultado"):
+    st.caption("Agendamentos recebidos diretamente do OTS/OTD; permanências calculadas pelo GPS do Estadias.")
+    if st.button("Atualizar OTS/OTD"):
         try:
-            st.session_state["performance_result"] = receive()
+            st.session_state["ots_otd_result"] = ots_otd.receive()
         except ValueError as exc:
             st.error(str(exc))
-    payload = st.session_state.get("performance_result")
+    payload = st.session_state.get("ots_otd_result")
     if not payload:
-        st.info("Clique em Atualizar resultado após publicar a análise no PerformanceRW.")
+        st.info("Clique em Atualizar OTS/OTD para receber o backup publicado.")
         return
-    st.caption(f"Publicação analisada em: {payload['analyzed_at']}")
-    with st.expander("Bases utilizadas na análise"):
-        st.json(payload["sources"])
-    panel = attach(cross, payload)
+    st.caption(f"Backup OTS/OTD: {payload.get('generated_at', 'data não informada')}")
+    panel = ots_otd.enrich_summary(_build_trip_summary_table(_build_cross_summary_table(cross)), payload)
     st.download_button(
         "Exportar CSV",
         panel.to_csv(index=False, sep=";").encode("utf-8-sig"),
-        "performance_rw_estadias.csv",
+        "ots_otd_estadias.csv",
         "text/csv",
         use_container_width=True,
     )
@@ -2283,36 +2234,28 @@ def render_cross_page(usuario: str) -> None:
     else:
         cross = read_cross(200000)
 
-    from estadias_app.performance import receive, enrich_summary
-    if not st.session_state.get("performance_load_attempted"):
-        st.session_state["performance_load_attempted"] = True
+    if not st.session_state.get("ots_otd_load_attempted"):
+        st.session_state["ots_otd_load_attempted"] = True
         try:
-            st.session_state["performance_result"] = receive()
+            st.session_state["ots_otd_result"] = ots_otd.receive()
         except ValueError as exc:
-            st.session_state["performance_load_error"] = str(exc)
-    if st.button("Atualizar PerformanceRW", key="cross_update_performance"):
+            st.session_state["ots_otd_load_error"] = str(exc)
+    if st.button("Atualizar OTS/OTD", key="cross_update_ots_otd"):
         try:
-            st.session_state["performance_result"] = receive()
-            st.session_state.pop("performance_load_error", None)
+            st.session_state["ots_otd_result"] = ots_otd.receive()
+            st.session_state.pop("ots_otd_load_error", None)
         except ValueError as exc:
             st.error(str(exc))
-    performance_payload = st.session_state.get("performance_result")
-    if performance_payload:
-        st.caption(f"PerformanceRW: análise de {performance_payload['analyzed_at']}")
+    ots_payload = st.session_state.get("ots_otd_result")
+    if ots_payload:
+        st.caption(f"OTS/OTD: backup de {ots_payload.get('generated_at', 'data não informada')}")
     else:
-        st.error(st.session_state.get("performance_load_error", "Resultado PerformanceRW não carregado. Clique em Atualizar PerformanceRW."))
-    summary = _build_trip_summary_table(_apply_conference(enrich_summary(_build_cross_summary_table(cross), cross, performance_payload)))
+        st.warning(st.session_state.get("ots_otd_load_error", "OTS/OTD não carregado. Clique em Atualizar OTS/OTD."))
+    summary = _build_trip_summary_table(_apply_conference(ots_otd.enrich_summary(_build_cross_summary_table(cross), ots_payload)))
     summary["Dentro da Regra Carga"] = summary.apply(_charge_rule_status, axis=1) if not summary.empty else pd.Series(dtype=str)
-    if performance_payload and not summary.empty:
-        matched = int(summary["Correspondência PerformanceRW"].eq("Exata").sum())
-        partial = int(summary["Correspondência PerformanceRW"].eq("Parcial").sum())
-        st.caption(f"PerformanceRW: {matched} viagem(ns) com GPS atual; {partial} com vínculo parcial; {len(summary) - matched - partial} sem vínculo.")
-        if all(row.get("OTD 1") == "Sem informação" for row in performance_payload.get("rows", [])):
-            st.info("OTD 1 não foi calculado no resultado publicado pelo PerformanceRW. Verifique Data/Hora do Registro OTS/OTD e Data Emissão NF na origem e publique nova análise.")
-        if partial:
-            st.warning("Há chegadas GPS diferentes do resultado publicado. OTS 3 e OTD 3 só aparecem quando o respectivo horário coincide. Reimporte o backup atual de Estadias no PerformanceRW, analise e publique novamente.")
-        elif matched == 0:
-            st.warning("Nenhuma viagem vinculada ao resultado publicado. Confira a coluna Motivo vínculo PerformanceRW.")
+    if ots_payload and not summary.empty:
+        matched = int(summary["Correspondência OTS/OTD"].eq("Exata").sum())
+        st.caption(f"OTS/OTD: {matched} viagem(ns) vinculada(s); {len(summary) - matched} sem vínculo. Confira o motivo nas colunas.")
     session_filters = {
         "meses": st.session_state.get("estadias_resumo_meses", []),
         "anos": st.session_state.get("estadias_resumo_anos", []),

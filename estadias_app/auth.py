@@ -5,9 +5,6 @@ import hmac
 from typing import Any
 
 
-DEFAULT_USERS = {"admin": "admin"}
-
-
 def _read_users_from_secrets() -> dict[str, str]:
     try:
         import streamlit as st
@@ -20,7 +17,7 @@ def _read_users_from_secrets() -> dict[str, str]:
     return {}
 
 
-def using_default_admin() -> bool:
+def users_missing() -> bool:
     return not _read_users_from_secrets()
 
 
@@ -35,7 +32,5 @@ def _password_matches(stored: str, password: str) -> bool:
 
 def authenticate(username: str, password: str) -> bool:
     user = str(username or "").strip()
-    users = _read_users_from_secrets() or DEFAULT_USERS
-    if user not in users and user == "admin":
-        users = {**users, "admin": "admin"}
+    users = _read_users_from_secrets()
     return bool(user in users and _password_matches(users[user], str(password or "")))

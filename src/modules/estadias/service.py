@@ -395,6 +395,7 @@ def _filter_tracker_for_trip_from_db(
     plate_count_cache: dict[str, int] | None = None,
     previous_trip_dt: datetime | None = None,
     next_trip_dt: datetime | None = None,
+    window_cache: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     plates = _trip_plate_candidates(trip)
     window_info: dict[str, Any] = {"fonte": "", "inicio": None, "fim": None, "total_pontos_placa": 0, "pontos_janela": 0}
@@ -420,9 +421,25 @@ def _filter_tracker_for_trip_from_db(
         log.append("RASTREADOR: janela de busca nao definida.")
         return pd.DataFrame(), window_info
 
-    view = repository.read_rastreador_period_for_plates(plates, _dt_sql(start), _dt_sql(end), 120000)
-    if not view.empty:
-        view = _ensure_datetime_column(view, "data_hora", "_data_dt").sort_values("_data_dt")
+    cached = window_cache if window_cache is not None and window_cache.get("plates") == plates else None
+    if cached and cached["start"] <= start and cached["end"] >= end:
+        view = cached["rows"]
+        view = view[view["_data_dt"].between(start, end)].copy()
+    else:
+        if window_cache is not None:
+            window_cache.clear()
+            extended_end = end + timedelta(days=1)
+            prefetched = repository.read_rastreador_period_for_plates(plates, _dt_sql(start), _dt_sql(extended_end), 120001)
+            if len(prefetched) <= 120000:
+                prefetched = _ensure_datetime_column(prefetched, "data_hora", "_data_dt").sort_values("_data_dt")
+                window_cache.update(plates=plates, start=start, end=extended_end, rows=prefetched)
+                view = prefetched[prefetched["_data_dt"].between(start, end)].copy()
+            else:
+                view = repository.read_rastreador_period_for_plates(plates, _dt_sql(start), _dt_sql(end), 120000)
+        else:
+            view = repository.read_rastreador_period_for_plates(plates, _dt_sql(start), _dt_sql(end), 120000)
+        if not view.empty and "_data_dt" not in view.columns:
+            view = _ensure_datetime_column(view, "data_hora", "_data_dt").sort_values("_data_dt")
     window_info["pontos_janela"] = int(len(view))
     log.append(f"RASTREADOR: {len(view)} registro(s) na janela {start} a {end}.")
     return view, window_info
@@ -1600,12 +1617,14 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
         return rows
     _emit_progress(progress_callback, 10, 100, f"Preparando cruzamento de {len(lcte)} viagem(ns)...")
     tracker_plate_counts: dict[str, int] = {}
+    tracker_window_cache: dict[str, Any] = {}
     used_tracker_stays: set[tuple[str, str, str, str, str]] = set()
     trip_neighbors_base = lcte if not plate_filter else _filter_lcte_by_plate(lcte_base, plate_filter)[0]
     trip_neighbors = _trip_neighbors_by_plate(trip_neighbors_base)
     processing_lcte = lcte.copy()
     processing_lcte["_trip_dt"] = pd.to_datetime(processing_lcte.apply(_trip_reference_datetime, axis=1), errors="coerce")
     processing_lcte = processing_lcte.sort_values(["placa_norm", "_trip_dt", "id"], na_position="last")
+    repeated_plates = set(processing_lcte["placa_norm"].value_counts().loc[lambda counts: counts > 1].index)
 
     total_trips = max(len(lcte), 1)
     last_progress = -1
@@ -1627,7 +1646,10 @@ def build_cross_rows(progress_callback: ProgressCallback | None = None, placa_fi
             reason_codes.append("LCTE_SEM_DESTINO")
 
         try:
-            tracker_matches, window_info = _filter_tracker_for_trip_from_db(trip, config, log, tracker_plate_counts, previous_trip_dt, next_trip_dt)
+            tracker_matches, window_info = _filter_tracker_for_trip_from_db(
+                trip, config, log, tracker_plate_counts, previous_trip_dt, next_trip_dt,
+                tracker_window_cache if plate in repeated_plates else None,
+            )
             if tracker_matches.empty:
                 reason_codes.append("RASTREADOR_SEM_REGISTROS")
             elif tracker_matches.get("_data_dt", pd.Series(dtype=object)).isna().all():

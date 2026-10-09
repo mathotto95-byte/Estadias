@@ -1,17 +1,12 @@
 # Estadias
 
-## Resultados do PerformanceRW
+## OTS e OTD
 
-Abra **PerformanceRW → Atualizar resultado** para consultar a análise publicada pelo Performance. A associação usa NF + placa exatas; chaves ambíguas e resultados com chegadas diferentes das atuais ficam Sem correspondência. Nenhuma estadia é modificada e nenhuma regra é recalculada neste sistema. A tela mostra as cinco regras, atendimento geral, motivo e data da análise, com exportação CSV.
+O Estadias calcula a permanência pelo LCTE e rastreador e lê diretamente `backups/ots_otd_latest.json` do repositório `mathotto95-byte/OTSeOTD`. O código de sete dígitos da Observação/Monitoramento liga o agendamento; NF + placa identificam a viagem e as chegadas GPS. Vínculos duplicados ou ausentes ficam sem classificação e mostram o motivo. Não é necessário usar PerformanceRW.
 
-O token GitHub atual precisa de Contents: Read no repositório `mathotto95-byte/Performance`. Se necessário, configure separadamente:
+O mesmo `GITHUB_TOKEN` do Estadias é usado para ler OTS/OTD. Ele precisa ter `Contents: Read` também no repositório `mathotto95-byte/OTSeOTD`; não há segundo token ou seção de Secrets.
 
-```toml
-[performance_results]
-token = "SEU_TOKEN_COM_LEITURA_DO_PERFORMANCE"
-```
-
-O resultado é lido de `backups/performance_latest.json` na branch main. Primeiro publique a análise no Performance. Os backups do Estadias passam a incluir as datas de envio para análise em metadados próprios, sem alterar as tabelas; o Performance usa esses envios para calcular o prazo de 15 dias.
+Após publicar o backup no OTS/OTD, use **Atualizar OTS/OTD** no Estadias. O backup recebido fica em memória na sessão; uma nova sessão lê novamente o último backup. Os resultados GPS e o banco OTS/OTD permanecem separados.
 
 Aplicacao independente do modulo Estadias, com banco proprio e backup enxuto direto em arquivo JSON no GitHub.
 
@@ -34,16 +29,14 @@ GITHUB_BACKUP_PATH = "backups/estadias_latest.json"
 GITHUB_IMPORTS_BACKUP_PATH = "backups/estadias_importacoes_latest.json"
 
 [users]
-admin = "admin"
-matheus = "123456"
+admin = "defina-uma-senha-forte"
+matheus = "defina-outra-senha-forte"
 ```
 
 O token do GitHub precisa ter acesso ao repositorio `mathotto95-byte/Estadias` e permissao `Contents: Read and write`.
 O app e publicado da branch `main`; os backups ficam na branch `backup-data` para nao reiniciar o Streamlit a cada gravacao. `GITHUB_BRANCH = "main"` antigo pode ser removido dos Secrets.
 
-## Resultados do PerformanceRW
-
-Na tela **Estadias**, clique em **Atualizar PerformanceRW** após publicar a análise no Performance. O painel e os arquivos Excel passam a mostrar **Previsão de Carga**, **Agendamento de Carga**, **Data Limite**, **Agenda GFL** e **Dentro da Regra**. Os mesmos campos ficam disponíveis na consulta **PerformanceRW**. A associação reutiliza NF + placa e verifica se as chegadas continuam iguais às da análise publicada. Sem correspondência segura, os prazos ficam vazios e o status é Sem informação. Quando uma viagem possui várias NFs com valores diferentes, a célula identifica o valor de cada NF; não há recálculo das regras no Estadias.
+Na tela **Estadias**, os horários OTS/OTD e as regras são calculados a partir do backup recebido e das chegadas GPS atuais. A tela **OTS e OTD** permite consultar e exportar a classificação. A ausência de horário GPS mantém a regra dependente dele como `Sem informação`.
 
 ## Arquivos de backup
 

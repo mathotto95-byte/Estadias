@@ -8,7 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 import streamlit as st
 
-from estadias_app.auth import authenticate, using_default_admin
+from estadias_app.auth import authenticate, users_missing
 from estadias_app.github_backup import (
     BACKUP_TABLES,
     all_database_tables,
@@ -37,7 +37,7 @@ from src.modules.estadias.page import (
     render_cross_page,
     render_gps_verification_page,
     render_imports_page,
-    render_performance_rw_page,
+    render_ots_otd_page,
 )
 from src.reports.exporter import dataframe_to_excel
 from src.utils.timezone import brasilia_now, brasilia_now_iso
@@ -48,7 +48,7 @@ MENU = [
     "Importação",
     "Estadias",
     "Conferência GPS",
-    "PerformanceRW",
+    "OTS e OTD",
     "Backup do Banco",
 ]
 
@@ -95,8 +95,9 @@ def _require_login() -> str:
     with center:
         with st.container(border=True):
             render_login_header("Estadias", "Acesso restrito")
-            if using_default_admin():
-                st.warning("Usuario inicial ativo: admin / admin. Configure usuarios nos Secrets antes de liberar para a equipe.")
+            if users_missing():
+                st.error("Configure [users] nos Secrets para liberar o acesso.")
+                st.stop()
             with st.form("login_form"):
                 username = st.text_input("Usuario")
                 password = st.text_input("Senha", type="password")
@@ -408,8 +409,8 @@ def main() -> None:
         render_cross_page(username)
     elif page == "Conferência GPS":
         render_gps_verification_page()
-    elif page == "PerformanceRW":
-        render_performance_rw_page()
+    elif page == "OTS e OTD":
+        render_ots_otd_page()
     elif page == "Backup do Banco":
         render_backup_page()
 
