@@ -24,6 +24,26 @@ from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_full_clear_removes_analysis_and_positions_but_keeps_configuration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "clear.sqlite"
+            with closing(sqlite3.connect(path)) as raw:
+                raw.row_factory = sqlite3.Row
+                create_modular_tables(DbConnection(raw, "sqlite"))
+                raw.execute("insert into mod_estadias_analise_manual (lcte_id) values (1)")
+                raw.execute("insert into mod_estadias_posicoes_resultado (lcte_id) values (1)")
+                raw.execute("insert into mod_estadias_configuracoes (chave, valor) values ('teste', 'preservado')")
+                raw.commit()
+            config = DatabaseConfig(db_type="sqlite", sqlite_path=path)
+            with patch("src.database.connection.get_database_config", return_value=config), patch.object(repository, "DB_PATH", path):
+                result = repository.clear_estadias_full_database()
+            self.assertEqual(result["deleted"][repository.ANALYSIS_TABLE], 1)
+            self.assertEqual(result["deleted"][repository.ESTADIA_POSITIONS_TABLE], 1)
+            with closing(sqlite3.connect(path)) as raw:
+                self.assertEqual(raw.execute("select count(*) from mod_estadias_analise_manual").fetchone()[0], 0)
+                self.assertEqual(raw.execute("select count(*) from mod_estadias_posicoes_resultado").fetchone()[0], 0)
+                self.assertEqual(raw.execute("select valor from mod_estadias_configuracoes where chave = 'teste'").fetchone()[0], "preservado")
+
     def test_gps_verification_starts_from_every_lcte_trip(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "gps.sqlite"

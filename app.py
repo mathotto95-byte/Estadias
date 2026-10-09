@@ -22,7 +22,6 @@ from estadias_app.github_backup import (
     import_backup_json_bytes,
     imported_database_counts,
     imported_database_tables,
-    restore_from_github_if_empty,
     restore_github_version,
     restore_analysis_marks_from_github,
     restore_json_bytes,
@@ -133,15 +132,6 @@ def _run_backup_background(reason: str) -> None:
     thread.start()
 
 
-def _restore_from_github_once() -> None:
-    if st.session_state.get("github_restore_checked"):
-        return
-    st.session_state["github_restore_checked"] = True
-    result = restore_from_github_if_empty()
-    if result.get("status") == "RESTAURADO":
-        st.session_state["last_github_restore_result"] = result
-
-
 def _auto_backup_if_data_changed() -> None:
     if st.session_state.pop("skip_next_auto_backup", False):
         st.session_state["last_github_backup_result"] = {
@@ -195,6 +185,7 @@ def _database_zip() -> bytes:
 def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
     st.caption("O backup salva resultados e base LCTE normalizada. Posicoes GPS nao fazem parte do backup.")
+    st.caption("Copias do GitHub sao restauradas somente por acao manual nesta pagina.")
     backup_col, test_col = st.columns(2)
     if backup_col.button("Enviar backup para GitHub", use_container_width=True, disabled=not github_backup_configured()):
         st.session_state["last_github_backup_result"] = backup_to_github("manual")
@@ -324,7 +315,7 @@ def render_backup_page() -> None:
             st.dataframe(pd.DataFrame([{"tabela": key, "registros_removidos": value} for key, value in deleted.items()]), use_container_width=True, hide_index=True)
 
     with st.expander("Zerar banco operacional completo", expanded=False):
-        st.error("Remove importacoes, resultados, conclusoes, auditoria, logs, locais, parametros e preferencias. Mantem somente a estrutura e configuracoes internas.")
+        st.error("Remove importacoes, resultados, analises, posicoes resumidas, conclusoes, auditoria, logs, locais, parametros e preferencias. Mantem somente a estrutura e configuracoes internas.")
         confirm_full = st.text_input("Digite ZERAR BANCO para liberar", key="confirm_clear_full_database")
         if st.button(
             "Zerar banco completo",
@@ -406,7 +397,6 @@ def main() -> None:
         st.error(f"Banco de dados indisponivel: {exc}")
         st.stop()
     if get_database_config().db_type != "postgres":
-        _restore_from_github_once()
         start_analysis_backup_scheduler()
     if st.sidebar.button("Atualizar pagina", use_container_width=True):
         st.rerun()

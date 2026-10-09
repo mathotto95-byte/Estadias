@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -334,6 +335,8 @@ def clear_estadias_full_database() -> dict[str, Any]:
         RASTREADOR_NORMALIZED_TABLE,
         LOG_TABLE,
         CROSS_TABLE,
+        ANALYSIS_TABLE,
+        ESTADIA_POSITIONS_TABLE,
         AUDITORIA_TABLE,
         CONCLUSOES_TABLE,
         STATUS_LOG_TABLE,
@@ -374,13 +377,14 @@ def clear_estadias_full_database() -> dict[str, Any]:
     compact_message = ""
     if db_type != "postgres" and DB_PATH.exists():
         try:
-            with sqlite3.connect(DB_PATH, timeout=60, isolation_level=None) as raw_conn:
+            with closing(sqlite3.connect(DB_PATH, timeout=60, isolation_level=None)) as raw_conn:
                 raw_conn.execute("vacuum")
             compacted = True
             compact_message = "SQLite compactado."
         except Exception as exc:
             compact_message = f"Banco zerado, mas compactacao SQLite nao executada: {exc}"
 
+    _invalidate_read_cache()
     return {
         "deleted": deleted,
         "total_deleted": sum(deleted.values()),
