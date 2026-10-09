@@ -335,12 +335,17 @@ class AnalysisDeadlineTest(unittest.TestCase):
 
     def test_old_complete_backup_remains_valid(self):
         old_tables = {table: [] for table in github_backup.BACKUP_TABLES if table != repository.ANALYSIS_TABLE}
+        old_tables[repository.ESTADIA_POSITIONS_TABLE] = [{"lcte_id": 1, "data_hora": "2026-09-01T10:00:00"}]
         old_tables[repository.CROSS_TABLE] = [{"lcte_id": 1}]
         imports = {table: [] for table in github_backup.IMPORT_BACKUP_TABLES}
         payload = {"schema": "estadias_completo_v1",
                    "results": {"schema": "estadias_backup_v1", "tables": old_tables, "records": {table: len(rows) for table, rows in old_tables.items()}},
                    "imports": {"schema": "estadias_importacoes_backup_v1", "tables": imports, "records": {table: 0 for table in imports}}}
         self.assertTrue(github_backup._valid_complete_backup(json.dumps(payload).encode()))
+        sanitized = json.loads(github_backup._without_position_backup(json.dumps(payload).encode()))
+        self.assertNotIn(repository.ESTADIA_POSITIONS_TABLE, sanitized["results"]["tables"])
+        self.assertNotIn(repository.ESTADIA_POSITIONS_TABLE, sanitized["results"]["records"])
+        self.assertTrue(github_backup._valid_complete_backup(json.dumps(sanitized).encode()))
 
     def test_receive_marks_preserves_existing_date(self):
         with sqlite3.connect(":memory:") as conn:

@@ -31,7 +31,7 @@ from estadias_app.github_backup import (
 )
 from src.config.settings import ROOT_DIR, ensure_directories
 from src.database.migrations import create_modular_tables
-from src.database.connection import get_connection
+from src.database.connection import get_connection, get_database_config
 from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_cross_page,
@@ -65,6 +65,16 @@ DATABASE_SCHEMA_VERSION = 2
 
 @st.cache_resource(show_spinner=False)
 def initialize_database(schema_version: int) -> None:
+    if get_database_config().db_type == "postgres":
+        with get_connection() as conn:
+            schema = conn.execute("select current_schema()").fetchone()[0]
+            if schema != "estadias":
+                raise RuntimeError("Schema estadias nao encontrado. Execute a migracao administrativa antes de conectar o app.")
+            required = ("mod_estadias_lcte_normalizada", "mod_estadias_cruzamento_inicial", "mod_estadias_analise_manual")
+            for table in required:
+                if conn.execute("select to_regclass(?)", (f"estadias.{table}",)).fetchone()[0] is None:
+                    raise RuntimeError(f"Tabela estadias.{table} ausente. Execute a migracao administrativa.")
+        return
     ensure_directories()
     with get_connection() as conn:
         create_modular_tables(conn)
@@ -173,7 +183,7 @@ def _database_zip() -> bytes:
                     "gerado_em": brasilia_now_iso(),
                     "resultado": {name: int(len(df)) for name, df in tables.items()},
                     "importacoes": {name: int(len(df)) for name, df in import_tables.items()},
-                    "observacao": "Contem resultados, posicoes resumidas para PDF e bases leves importadas. Rastreador bruto e temporario.",
+                    "observacao": "Contem resultados e base LCTE normalizada. Posicoes GPS nao fazem parte do backup.",
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -184,7 +194,7 @@ def _database_zip() -> bytes:
 
 def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
-    st.caption("O backup salva resultados, posicoes resumidas das estadias para PDF e bases leves. O rastreador bruto e temporario.")
+    st.caption("O backup salva resultados e base LCTE normalizada. Posicoes GPS nao fazem parte do backup.")
     backup_col, test_col = st.columns(2)
     if backup_col.button("Enviar backup para GitHub", use_container_width=True, disabled=not github_backup_configured()):
         st.session_state["last_github_backup_result"] = backup_to_github("manual")
@@ -390,9 +400,14 @@ def main() -> None:
     _apply_theme()
     _clear_large_session_exports()
     username = _require_login()
-    initialize_database(DATABASE_SCHEMA_VERSION)
-    _restore_from_github_once()
-    start_analysis_backup_scheduler()
+    try:
+        initialize_database(DATABASE_SCHEMA_VERSION)
+    except Exception as exc:
+        st.error(f"Banco de dados indisponivel: {exc}")
+        st.stop()
+    if get_database_config().db_type != "postgres":
+        _restore_from_github_once()
+        start_analysis_backup_scheduler()
     if st.sidebar.button("Atualizar pagina", use_container_width=True):
         st.rerun()
     render_brand_header("Estadias", "Sistema independente com banco proprio e backup direto no GitHub.")
@@ -414,7 +429,8 @@ def main() -> None:
     elif page == "Backup do Banco":
         render_backup_page()
 
-    _auto_backup_if_data_changed()
+    if get_database_config().db_type != "postgres":
+        _auto_backup_if_data_changed()
 
 
 if __name__ == "__main__":

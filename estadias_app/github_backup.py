@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from src.database.connection import get_connection, read_sql
+from src.database.connection import get_connection, get_database_config, read_sql
 from src.modules.estadias.repository import (
     ANALYSIS_TABLE,
     AUDITORIA_TABLE,
@@ -60,7 +60,6 @@ ESTADIAS_TABLES = [
 BACKUP_TABLES = [
     CROSS_TABLE,
     ANALYSIS_TABLE,
-    ESTADIA_POSITIONS_TABLE,
     CONCLUSOES_TABLE,
     AUDITORIA_TABLE,
     STATUS_LOG_TABLE,
@@ -329,7 +328,7 @@ def _table_exists(table: str) -> bool:
         with get_connection() as conn:
             if conn.db_type == "postgres":
                 row = conn.execute(
-                    "select 1 from information_schema.tables where table_schema = 'public' and table_name = ?",
+                    "select 1 from information_schema.tables where table_schema = current_schema() and table_name = ?",
                     (table,),
                 ).fetchone()
             else:
@@ -343,7 +342,7 @@ def _table_columns(table: str) -> list[str]:
     with get_connection() as conn:
         if conn.db_type == "postgres":
             rows = conn.execute(
-                "select column_name from information_schema.columns where table_schema = 'public' and table_name = ? order by ordinal_position",
+                "select column_name from information_schema.columns where table_schema = current_schema() and table_name = ? order by ordinal_position",
                 (table,),
             ).fetchall()
             return [str(row[0]) for row in rows]
@@ -623,6 +622,15 @@ def _valid_complete_backup(content: bytes) -> bool:
         return False
 
 
+def _without_position_backup(content: bytes) -> bytes:
+    """Keep older results while dropping GPS positions from rotating copies."""
+    payload = json.loads(content)
+    results = payload.get("results") or {}
+    (results.get("tables") or {}).pop(ESTADIA_POSITIONS_TABLE, None)
+    (results.get("records") or {}).pop(ESTADIA_POSITIONS_TABLE, None)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+
+
 def _restore_complete_backup(content: bytes, mode: str) -> dict[str, Any]:
     if not _valid_complete_backup(content):
         raise ValueError("Backup completo invalido ou incompleto.")
@@ -757,6 +765,8 @@ def restore_json_bytes(content: bytes, mode: str = "merge") -> dict[str, Any]:
 
 
 def backup_to_github(reason: str = "manual") -> dict[str, Any]:
+    if get_database_config().db_type == "postgres":
+        return {"status": "DESATIVADO", "message": "Backup GitHub legado desativado para PostgreSQL; politica nova pendente.", "records": 0}
     settings = github_settings()
     if _token_is_placeholder(settings["token"]):
         return {"status": "TOKEN_INVALIDO", "message": "GITHUB_TOKEN incompleto ou com reticencias.", "records": 0}
@@ -788,7 +798,7 @@ def backup_to_github(reason: str = "manual") -> dict[str, Any]:
                     _upload_bytes(settings, settings["previous_path"], content, f"Backup Estadias anterior inicial ({reason})")
                 cleanup = _prune_legacy_history(settings)
                 return {"status": "SEM_ALTERACAO", "message": "Duas copias completas confirmadas; backup atual ja corresponde ao banco.", "records": records, "cleanup": cleanup}
-            _upload_bytes(settings, settings["previous_path"], previous, f"Backup Estadias anterior ({reason})")
+            _upload_bytes(settings, settings["previous_path"], _without_position_backup(previous), f"Backup Estadias anterior ({reason})")
         elif previous:
             try:
                 old_schema = json.loads(previous).get("schema")

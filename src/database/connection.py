@@ -77,7 +77,10 @@ def _read_secret(name: str, default: str = "") -> str:
 
 def get_database_config() -> DatabaseConfig:
     database_url = _read_secret("DATABASE_URL").strip()
-    if database_url:
+    postgres_enabled = _read_secret("ESTADIAS_POSTGRES_ENABLED").strip().upper() in {"SIM", "TRUE", "1"}
+    if postgres_enabled and not database_url:
+        raise DatabaseConnectionError("PostgreSQL ativado sem DATABASE_URL. Configure os Secrets antes de iniciar.")
+    if postgres_enabled:
         return DatabaseConfig(db_type="postgres", database_url=database_url)
     return DatabaseConfig(db_type="sqlite", sqlite_path=DB_PATH)
 
@@ -115,7 +118,7 @@ def _connect_postgres(database_url: str) -> DbConnection:
         from psycopg2.extras import DictCursor
     except ImportError as exc:
         raise DatabaseConnectionError("psycopg2-binary nao instalado.") from exc
-    conn = psycopg2.connect(database_url, cursor_factory=DictCursor)
+    conn = psycopg2.connect(database_url, cursor_factory=DictCursor, options="-c search_path=estadias")
     return DbConnection(conn, "postgres")
 
 

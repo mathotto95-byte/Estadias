@@ -7,42 +7,11 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+from estadias_app.ots_otd_rules import RULES, UNKNOWN, _date, _text, avaliar_regras_viagem
 
-RULES = ("OTS 2", "OTS 3", "OTD 1", "OTD 2", "OTD 3")
+
 FIELDS = ("Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL")
-UNKNOWN = "Sem informação"
 REQUIRED = {"id", "previsao_carga", "data_limite", "agendamento_carga", "agenda_gfl", "codigo_monitoramento", "data_hora_registro"}
-
-
-def _text(value):
-    return "" if value is None or pd.isna(value) else str(value).strip()
-
-
-def _date(value):
-    value = _text(value)
-    return pd.to_datetime(value, dayfirst=not bool(re.match(r"^\d{4}-\d\d-\d\d", value)), errors="coerce") if value else pd.NaT
-
-
-def _day(value):
-    parsed = _date(value)
-    if pd.isna(parsed):
-        return None
-    return (parsed.tz_convert("America/Sao_Paulo") if parsed.tzinfo else parsed).date()
-
-
-def _compare(actual, deadline):
-    a, b = _date(actual), _date(deadline)
-    if pd.isna(a) or pd.isna(b):
-        return UNKNOWN
-    if a.tzinfo:
-        a = a.tz_convert("America/Sao_Paulo").tz_localize(None)
-    if b.tzinfo:
-        b = b.tz_convert("America/Sao_Paulo").tz_localize(None)
-    if not re.search(r"\d{1,2}:\d{2}", _text(deadline)):
-        return "Dentro do prazo" if a.date() <= b.date() else "Fora do prazo"
-    if not re.search(r"\d{1,2}:\d{2}", _text(actual)) and a.date() == b.date():
-        return UNKNOWN
-    return "Dentro do prazo" if a <= b else "Fora do prazo"
 
 
 def receive():
@@ -115,21 +84,7 @@ def enrich_summary(summary, payload):
         origin = trip_arrivals.get("ORIGEM") or _text(row.get("Chegada Rastreador Carga"))
         destination = trip_arrivals.get("DESTINO") or _text(row.get("Chegada Rastreador Descarga"))
         issued = row.get("Data Emissao NF") or row.get("data_emissao_nf")
-        result.at[index, "OTS 2"] = _compare(schedule.get("agendamento_carga"), schedule.get("previsao_carga"))
-        result.at[index, "OTS 3"] = _compare(origin, schedule.get("agendamento_carga") or schedule.get("previsao_carga"))
-        result.at[index, "OTD 2"] = _compare(schedule.get("agenda_gfl"), schedule.get("data_limite"))
-        if result.at[index, "OTD 2"] == "Fora do prazo" and _compare(destination, schedule.get("data_limite")) == "Dentro do prazo":
-            result.at[index, "OTD 2"] = "Dentro do prazo"
-        if _day(schedule.get("data_limite")) and _day(schedule.get("data_limite")).weekday() == 6:
-            sunday = _day(destination) == _day(schedule.get("data_limite"))
-            result.at[index, "OTD 2"] = "Dentro do prazo" if sunday else "Fora do prazo"
-            result.at[index, "OTD 3"] = "Dentro do prazo" if sunday else "Fora do prazo"
-        else:
-            result.at[index, "OTD 3"] = ("Dentro do prazo" if _day(destination) == _day(schedule.get("data_limite")) else "Fora do prazo") if _day(destination) and _day(schedule.get("data_limite")) else UNKNOWN
-        registered = _day(schedule.get("data_hora_registro"))
-        emitted = _day(issued)
-        result.at[index, "OTD 1"] = ("Dentro do prazo" if registered == emitted else "Fora do prazo") if registered and emitted else UNKNOWN
-        values = [result.at[index, rule] for rule in RULES]
-        result.at[index, "Dentro da Regra"] = "Não" if "Fora do prazo" in values else "Sim" if all(value == "Dentro do prazo" for value in values) else UNKNOWN
+        for field, value in avaliar_regras_viagem(schedule, origin, destination, issued).items():
+            result.at[index, field] = value
         result.at[index, "Correspondência OTS/OTD"] = "Exata"
     return result

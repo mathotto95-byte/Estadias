@@ -131,7 +131,7 @@ def clear_lcte_base() -> dict[str, int]:
                     """
                     select 1
                     from information_schema.tables
-                    where table_schema = 'public' and table_name = ?
+                    where table_schema = current_schema() and table_name = ?
                     """,
                     (table,),
                 ).fetchone()
@@ -175,7 +175,7 @@ def clear_estadias_rastreador_database() -> dict[str, Any]:
                     """
                     select 1
                     from information_schema.tables
-                    where table_schema = 'public' and table_name = ?
+                    where table_schema = current_schema() and table_name = ?
                     """,
                     (table,),
                 ).fetchone()
@@ -244,7 +244,7 @@ def clear_estadias_imported_database() -> dict[str, int]:
                     """
                     select 1
                     from information_schema.tables
-                    where table_schema = 'public' and table_name = ?
+                    where table_schema = current_schema() and table_name = ?
                     """,
                     (table,),
                 ).fetchone()
@@ -286,7 +286,7 @@ def clear_estadias_import_residues() -> dict[str, Any]:
                     """
                     select 1
                     from information_schema.tables
-                    where table_schema = 'public' and table_name = ?
+                    where table_schema = current_schema() and table_name = ?
                     """,
                     (table,),
                 ).fetchone()
@@ -352,7 +352,7 @@ def clear_estadias_full_database() -> dict[str, Any]:
                     """
                     select 1
                     from information_schema.tables
-                    where table_schema = 'public' and table_name = ?
+                    where table_schema = current_schema() and table_name = ?
                     """,
                     (table,),
                 ).fetchone()

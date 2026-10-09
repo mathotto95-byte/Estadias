@@ -77,7 +77,7 @@ def _table_columns(conn, table: str) -> set[str]:
             """
             select column_name
             from information_schema.columns
-            where table_schema = 'public' and table_name = ?
+            where table_schema = current_schema() and table_name = ?
             """,
             (table,),
         ).fetchall()
@@ -563,13 +563,11 @@ def create_modular_tables(conn) -> None:
         "trava_municipio_velocidade_max_kmh": "Velocidade maxima para tratar salto temporario de municipio como perda de sinal.",
         "limite_agendamento_minutos": "Limite operacional para diferenca de agendamento.",
     }.items():
-        conn.execute(
-            """
-            insert or ignore into mod_estadias_configuracoes (chave, valor, descricao, updated_at, updated_by)
-            values (?, '', ?, '', 'sistema')
-            """,
-            (chave, descricao),
-        )
+        if getattr(conn, "db_type", "sqlite") == "postgres":
+            sql = "insert into mod_estadias_configuracoes (chave, valor, descricao, updated_at, updated_by) select ?, '', ?, '', 'sistema' where not exists (select 1 from mod_estadias_configuracoes where chave = ?)"
+        else:
+            sql = "insert or ignore into mod_estadias_configuracoes (chave, valor, descricao, updated_at, updated_by) values (?, '', ?, '', 'sistema')"
+        conn.execute(sql, (chave, descricao, chave) if getattr(conn, "db_type", "sqlite") == "postgres" else (chave, descricao))
 
     ensure_columns(
         conn,

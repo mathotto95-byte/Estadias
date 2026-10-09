@@ -16,7 +16,7 @@ def table_exists(table: str) -> bool:
                 """
                 select 1
                 from information_schema.tables
-                where table_schema = 'public' and table_name = ?
+                where table_schema = current_schema() and table_name = ?
                 """,
                 (table,),
             ).fetchone()

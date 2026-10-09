@@ -22,7 +22,7 @@ def ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
                 """
                 select column_name
                 from information_schema.columns
-                where table_schema = 'public' and table_name = ?
+                where table_schema = current_schema() and table_name = ?
                 """,
                 (table,),
             ).fetchall()
