@@ -70,7 +70,28 @@ def _snapshot(payload: dict[str, Any]) -> tuple[bytes, str, int]:
     stable = {key: value for key, value in payload.items() if key != "generated_at"}
     digest = hashlib.sha256(json.dumps(stable, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
     content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
-    return gzip.compress(content, mtime=0), digest, trips
+    return gzip.compress(content, compresslevel=6, mtime=0), digest, trips
+
+
+def preview() -> dict[str, Any]:
+    content, digest, trips = _snapshot(backup_payload())
+    with _connect() as conn:
+        rows = conn.execute(
+            f"select slot, sha256, octet_length(conteudo) from {BACKUP_TABLE}"
+        ).fetchall()
+    existing = {str(row[0]): {"sha256": str(row[1]), "bytes": int(row[2])} for row in rows}
+    current = existing.get("atual")
+    previous = existing.get("anterior")
+    unchanged = bool(current and current["sha256"] == digest)
+    stored_now = sum(item["bytes"] for item in existing.values())
+    stored_after = stored_now if unchanged else len(content) + (current["bytes"] if current else 0)
+    return {
+        "viagens": trips,
+        "bytes_compactados": len(content),
+        "bytes_armazenados_apos_envio": stored_after,
+        "variacao_bytes": stored_after - stored_now,
+        "status": "SEM_ALTERACAO" if unchanged else "PRONTO_PARA_ENVIO",
+    }
 
 
 def upload() -> dict[str, Any]:

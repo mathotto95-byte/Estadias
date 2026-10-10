@@ -197,16 +197,32 @@ def render_backup_page() -> None:
             else:
                 st.caption(f"Conexao configurada: {connection['user']} @ {connection['host']}:{connection['port']}")
             st.caption("A senha pode ser configurada separadamente em ESTADIAS_RESULTADOS_DB_PASSWORD, sem codificacao de URL.")
-            check_col, send_col = st.columns(2)
+            check_col, preview_col, send_col = st.columns(3)
             if check_col.button("Testar Supabase", use_container_width=True):
                 try:
                     st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
                     st.success("Conexao e tabela de backup confirmadas.")
                 except Exception as exc:
                     st.error(f"Falha no Supabase: {exc}")
+            if preview_col.button("Dimensionar backup", use_container_width=True):
+                try:
+                    st.session_state["estadias_supabase_preview"] = supabase_results_backup.preview()
+                except Exception as exc:
+                    st.error(f"Nao foi possivel dimensionar o backup: {exc}")
+            estimate = st.session_state.get("estadias_supabase_preview")
+            if estimate:
+                st.caption(
+                    f"{estimate['viagens']} viagens | Arquivo compactado: "
+                    f"{estimate['bytes_compactados'] / 1048576:.2f} MB | "
+                    f"Duas copias apos envio: {estimate['bytes_armazenados_apos_envio'] / 1048576:.2f} MB | "
+                    f"Variacao: {estimate['variacao_bytes'] / 1048576:+.2f} MB | "
+                    f"{estimate['status'].replace('_', ' ')}"
+                )
+                st.caption("Previa dos arquivos compactados, sem overhead do PostgreSQL. O envio le os resultados novamente.")
             if send_col.button("Enviar resultados ao Supabase", use_container_width=True):
                 try:
                     result = supabase_results_backup.upload()
+                    st.session_state.pop("estadias_supabase_preview", None)
                     st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
                     st.success(f"{result['viagens']} viagem(ns): {result['status'].lower()} ({result['bytes_compactados']} bytes compactados).")
                 except Exception as exc:

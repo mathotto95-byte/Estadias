@@ -38,6 +38,19 @@ class SupabaseResultsBackupTest(unittest.TestCase):
         self.assertEqual(trips, 1)
         self.assertEqual(first_hash, second_hash)
 
+    def test_preview_estimates_two_slot_storage_without_writing(self):
+        payload = {"tables": {CROSS_TABLE: [{"lcte_id": 1}]}}
+        content, _, _ = backup._snapshot(payload)
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = [("atual", "old", 100), ("anterior", "older", 50)]
+        context = MagicMock()
+        context.__enter__.return_value = conn
+        with patch.object(backup, "backup_payload", return_value=payload), patch.object(backup, "_connect", return_value=context):
+            estimate = backup.preview()
+        self.assertEqual(estimate["bytes_armazenados_apos_envio"], len(content) + 100)
+        self.assertEqual(estimate["variacao_bytes"], len(content) - 50)
+        self.assertEqual(conn.execute.call_count, 1)
+
     def test_upload_writes_only_changed_snapshot(self):
         payload = {"schema": "estadias_backup_v1", "generated_at": "2026-10-10", "tables": {CROSS_TABLE: [{"lcte_id": 1}]}}
         conn = MagicMock()
