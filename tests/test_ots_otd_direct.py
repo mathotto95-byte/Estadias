@@ -38,6 +38,13 @@ class DirectOtsOtdTest(unittest.TestCase):
         self.assertEqual(result["OTD 3"].tolist(), ["Dentro do prazo", "Dentro do prazo"])
         self.assertEqual(result["OTD 1"].tolist(), ["Dentro do prazo", "Dentro do prazo"])
 
+    def test_latest_schedule_accepts_mixed_timezone_timestamps(self):
+        payload = backup()
+        payload["rows"].append({**payload["rows"][0], "id": 2, "data_hora_registro": "2026-09-10T12:00:00+00:00", "previsao_carga": "2026-09-11"})
+        rows = pd.DataFrame([{"lcte_id": 1, "Notas": "746", "Placa": "AIW8A04", "monitoramento": "1234567"}])
+        result = enrich_summary(rows, payload).iloc[0]
+        self.assertEqual(result["Previsão de Carga"], "2026-09-11")
+
     def test_conflicting_monitoring_cannot_borrow_schedule(self):
         rows = pd.DataFrame([
             {"lcte_id": 1, "Notas": "746", "Placa": "AIW8A04", "monitoramento": "1234567"},

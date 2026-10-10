@@ -14,6 +14,11 @@ FIELDS = ("Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda G
 REQUIRED = {"id", "previsao_carga", "data_limite", "agendamento_carga", "agenda_gfl", "codigo_monitoramento", "data_hora_registro"}
 
 
+def _registro_local(row):
+    value = _date(row.get("data_hora_registro"))
+    return value.tz_convert("America/Sao_Paulo").tz_localize(None) if pd.notna(value) and value.tzinfo else value
+
+
 def receive():
     from estadias_app.github_backup import github_settings
 
@@ -53,8 +58,8 @@ def enrich_summary(summary, payload):
         code = _text(row.get("codigo_monitoramento"))
         if re.fullmatch(r"\d{7}", code):
             schedules.setdefault(code, []).append(row)
-    schedules = {code: max(group, key=lambda row: (_date(row.get("data_hora_registro")) if pd.notna(_date(row.get("data_hora_registro"))) else pd.Timestamp.min, int(row.get("id") or 0)))
-                 for code, group in schedules.items() if all(pd.notna(_date(row.get("data_hora_registro"))) for row in group)}
+    schedules = {code: max(group, key=lambda row: (_registro_local(row), int(row.get("id") or 0)))
+                 for code, group in schedules.items() if all(pd.notna(_registro_local(row)) for row in group)}
     identities = {}
     for _, row in result.iterrows():
         plate = re.sub(r"[^A-Z0-9]", "", _text(row.get("Placa")).upper())
