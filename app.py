@@ -82,8 +82,7 @@ def _require_login() -> str:
         st.sidebar.subheader("Usuario")
         st.sidebar.success(username)
         if st.sidebar.button("Sair", use_container_width=True):
-            st.session_state.pop("authenticated", None)
-            st.session_state.pop("username", None)
+            st.session_state.clear()
             st.rerun()
         return username
 
