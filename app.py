@@ -1,46 +1,34 @@
 from __future__ import annotations
 
-import json
 import threading
-from io import BytesIO
-from zipfile import ZIP_DEFLATED, ZipFile
 
-import pandas as pd
 import streamlit as st
 
 from estadias_app.auth import authenticate, users_missing
 from estadias_app import supabase_results_backup
 from estadias_app.github_backup import (
     BACKUP_TABLES,
-    all_database_tables,
-    backup_json_bytes,
     backup_to_github,
     start_analysis_backup_scheduler,
     data_signature,
     github_auto_backup_enabled,
     github_backup_configured,
     github_backup_versions,
-    import_backup_json_bytes,
-    imported_database_counts,
-    imported_database_tables,
     restore_github_version,
     restore_analysis_marks_from_github,
     restore_json_bytes,
     table_counts,
-    test_github_connection,
 )
 from src.config.settings import ROOT_DIR, ensure_directories
 from src.database.migrations import create_modular_tables
 from src.database.connection import get_connection, get_database_config
-from src.modules.estadias.repository import clear_estadias_full_database, clear_estadias_import_residues
+from src.modules.estadias.repository import CROSS_TABLE, clear_estadias_full_database, clear_estadias_import_residues
 from src.modules.estadias.page import (
     render_cross_page,
     render_gps_verification_page,
     render_imports_page,
     render_ots_otd_page,
 )
-from src.reports.exporter import dataframe_to_excel
-from src.utils.timezone import brasilia_now, brasilia_now_iso
 from src.utils.rw_theme import apply_theme, render_brand_header, render_login_header, render_sidebar_logo
 
 
@@ -54,8 +42,6 @@ MENU = [
 
 
 LARGE_SESSION_EXPORT_KEYS = (
-    "estadias_importacoes_backup_bytes",
-    "estadias_zip_backup_bytes",
     "estadias_pdf_export_preparado",
 )
 
@@ -146,7 +132,8 @@ def _auto_backup_if_data_changed() -> None:
             pass
         st.session_state.pop("estadias_data_changed", None)
         return
-    if "last_data_signature" in st.session_state and not st.session_state.pop("estadias_data_changed", False):
+    changed = st.session_state.pop("estadias_data_changed", False)
+    if "last_data_signature" in st.session_state and not changed:
         return
     try:
         signature = data_signature()
@@ -154,289 +141,155 @@ def _auto_backup_if_data_changed() -> None:
         return
     previous = st.session_state.get("last_data_signature")
     st.session_state["last_data_signature"] = signature
-    if previous and previous != signature:
+    if previous and (previous != signature or changed):
         _run_backup_background("alteracao_dados")
 
 
-def _database_zip() -> bytes:
-    tables = all_database_tables()
-    import_tables = imported_database_tables()
-    output = BytesIO()
-    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("estadias_resultado_backup.json", backup_json_bytes())
-        archive.writestr("estadias_importacoes_backup.json", import_backup_json_bytes())
-        archive.writestr("estadias_resultado_backup.xlsx", dataframe_to_excel(tables))
-        archive.writestr("estadias_importacoes_backup.xlsx", dataframe_to_excel(import_tables))
-        archive.writestr(
-            "manifesto.json",
-            json.dumps(
-                {
-                    "gerado_em": brasilia_now_iso(),
-                    "resultado": {name: int(len(df)) for name, df in tables.items()},
-                    "importacoes": {name: int(len(df)) for name, df in import_tables.items()},
-                    "observacao": "Contem resultados e base LCTE normalizada. Posicoes GPS nao fazem parte do backup.",
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-        )
-    return output.getvalue()
-
-
 def render_backup_page() -> None:
-    st.subheader("Backup e recuperacao")
-    st.caption("O backup salva resultados e base LCTE normalizada. Posicoes GPS nao fazem parte do backup.")
-    st.caption("Copias do GitHub sao restauradas somente por acao manual nesta pagina.")
-    with st.expander("Backup de resultados no Supabase", expanded=True):
-        if not supabase_results_backup.configured():
-            st.info("Configure ESTADIAS_RESULTADOS_DATABASE_URL nos Secrets para habilitar o backup de resultados.")
-        else:
-            connection = supabase_results_backup.connection_summary()
-            if connection.get("error"):
-                st.warning(connection["error"])
-            else:
-                st.caption(f"Conexao configurada: {connection['user']} @ {connection['host']}:{connection['port']}")
-            st.caption("A senha pode ser configurada separadamente em ESTADIAS_RESULTADOS_DB_PASSWORD, sem codificacao de URL.")
-            check_col, preview_col, send_col = st.columns(3)
-            if check_col.button("Testar Supabase", use_container_width=True):
-                try:
-                    st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
-                    st.success("Conexao e tabela de backup confirmadas.")
-                except Exception as exc:
-                    st.error(f"Falha no Supabase: {exc}")
-            if preview_col.button("Dimensionar backup", use_container_width=True):
-                try:
-                    st.session_state["estadias_supabase_preview"] = supabase_results_backup.preview()
-                except Exception as exc:
-                    st.error(f"Nao foi possivel dimensionar o backup: {exc}")
-            estimate = st.session_state.get("estadias_supabase_preview")
-            if estimate:
-                st.caption(
-                    f"{estimate['viagens']} viagens | Arquivo compactado: "
-                    f"{estimate['bytes_compactados'] / 1048576:.2f} MB | "
-                    f"Duas copias apos envio: {estimate['bytes_armazenados_apos_envio'] / 1048576:.2f} MB | "
-                    f"Variacao: {estimate['variacao_bytes'] / 1048576:+.2f} MB | "
-                    f"{estimate['status'].replace('_', ' ')}"
-                )
-                st.caption("Previa dos arquivos compactados, sem overhead do PostgreSQL. O envio le os resultados novamente.")
-            if send_col.button("Enviar resultados ao Supabase", use_container_width=True):
-                try:
-                    result = supabase_results_backup.upload()
-                    st.session_state.pop("estadias_supabase_preview", None)
-                    st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
-                    st.success(f"{result['viagens']} viagem(ns): {result['status'].lower()} ({result['bytes_compactados']} bytes compactados).")
-                except Exception as exc:
-                    st.error(f"Backup nao enviado: {exc}")
-            copies = (st.session_state.get("estadias_supabase_status") or {}).get("copias") or []
-            if copies:
-                st.dataframe(pd.DataFrame(copies), use_container_width=True, hide_index=True)
-                slot = st.selectbox("Copia do Supabase", [item["slot"] for item in copies])
-                if st.button("Preparar copia do Supabase", use_container_width=True):
-                    try:
-                        st.session_state["estadias_supabase_download"] = (slot, supabase_results_backup.download(slot))
-                    except Exception as exc:
-                        st.error(f"Nao foi possivel baixar a copia: {exc}")
-                prepared = st.session_state.get("estadias_supabase_download")
-                if prepared and prepared[0] == slot:
-                    st.download_button("Baixar resultado JSON do Supabase", prepared[1], f"estadias_resultado_{slot}.json", "application/json", use_container_width=True)
-    backup_col, test_col = st.columns(2)
-    if backup_col.button("Enviar backup para GitHub", use_container_width=True, disabled=not github_backup_configured()):
-        st.session_state["last_github_backup_result"] = backup_to_github("manual")
-    if test_col.button("Testar conexao GitHub", use_container_width=True):
-        st.session_state["last_github_connection_test"] = test_github_connection()
-    for key in ("last_github_backup_result", "last_github_connection_test"):
-        result = st.session_state.get(key) or {}
-        if result:
-            (st.success if result.get("status") in {"SUCESSO", "SEM_ALTERACAO"} else st.warning)(result.get("message") or result.get("status"))
-    if github_backup_configured():
-        if st.button("Verificar copias no GitHub", use_container_width=True):
+    st.subheader("Backup do Banco")
+    counts = table_counts(BACKUP_TABLES)
+    trips = counts.get(CROSS_TABLE, 0)
+    saved = st.session_state.get("estadias_supabase_status")
+    copies = {item["slot"]: item for item in (saved or {}).get("copias", [])}
+    current = copies.get("atual")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Viagens calculadas", trips)
+    c2.metric("Supabase", current["gerado_em"][:19].replace("T", " ") if current else ("Sem copia" if saved else "Nao verificado"))
+    c3.metric("GitHub secundario", "Configurado" if github_backup_configured() else "Nao configurado")
+
+    if not supabase_results_backup.configured():
+        st.warning("Backup Supabase nao configurado.")
+    else:
+        connection = supabase_results_backup.connection_summary()
+        if connection.get("error"):
+            st.warning(connection["error"])
+        check_col, preview_col, send_col = st.columns(3)
+        if check_col.button("Atualizar resumo", use_container_width=True):
             try:
-                st.session_state["estadias_github_versions"] = github_backup_versions()
+                st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
+                st.rerun()
             except Exception as exc:
-                st.error(f"Falha ao consultar backups: {exc}")
-        versions = st.session_state.get("estadias_github_versions") or []
-        if versions:
-            st.dataframe(pd.DataFrame(versions), use_container_width=True, hide_index=True)
-            selection = st.selectbox("Copia para recuperar", [item["label"] for item in versions])
-            confirmation = st.text_input("Digite RESTAURAR GITHUB para substituir o banco", key="confirm_github_restore")
-            if st.button("Restaurar copia selecionada", disabled=confirmation.strip().upper() != "RESTAURAR GITHUB", use_container_width=True):
+                st.error(f"Falha ao consultar Supabase: {exc}")
+        if preview_col.button("Dimensionar backup", use_container_width=True, disabled=trips <= 0):
+            try:
+                st.session_state["estadias_supabase_preview"] = supabase_results_backup.preview()
+            except Exception as exc:
+                st.error(f"Nao foi possivel dimensionar: {exc}")
+        if send_col.button("Enviar resultados", use_container_width=True, disabled=trips <= 0):
+            try:
+                result = supabase_results_backup.upload()
+                st.session_state.pop("estadias_supabase_preview", None)
+                st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
+                st.success(f"{result['viagens']} viagens: {result['status'].lower()}.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Backup nao enviado: {exc}")
+        estimate = st.session_state.get("estadias_supabase_preview")
+        if estimate:
+            st.caption(
+                f"Arquivo: {estimate['bytes_compactados'] / 1048576:.2f} MB | "
+                f"Duas copias: {estimate['bytes_armazenados_apos_envio'] / 1048576:.2f} MB | "
+                f"Variacao: {estimate['variacao_bytes'] / 1048576:+.2f} MB | "
+                f"{estimate['status'].replace('_', ' ')}"
+            )
+        if copies:
+            st.caption("Supabase: " + " | ".join(
+                f"{slot}: {item['viagens']} viagens, {item['bytes_compactados'] / 1048576:.2f} MB"
+                for slot, item in copies.items()
+            ))
+
+    with st.expander("Backup secundario no GitHub"):
+        st.caption("Copia independente dos resultados e da base LCTE. Posicoes GPS nao sao incluidas.")
+        if not github_backup_configured():
+            st.info("GitHub nao configurado.")
+        elif get_database_config().db_type == "postgres":
+            st.info("Backup GitHub desativado para banco operacional PostgreSQL.")
+        else:
+            if st.button("Enviar copia ao GitHub", use_container_width=True):
+                st.session_state["last_github_backup_result"] = backup_to_github("manual")
+            result = st.session_state.get("last_github_backup_result") or {}
+            if result:
+                (st.success if result.get("status") in {"SUCESSO", "SEM_ALTERACAO"} else st.warning)(
+                    result.get("message") or result.get("status")
+                )
+            if st.button("Verificar copias do GitHub", use_container_width=True):
                 try:
-                    result = restore_github_version(selection)
-                    st.session_state["estadias_database_restore_result"] = result
-                    st.rerun()
+                    st.session_state["estadias_github_versions"] = github_backup_versions()
                 except Exception as exc:
-                    st.error(f"Falha ao restaurar a copia: {exc}")
-        with st.expander("Receber marcacoes de analise do GitHub"):
-            st.caption("Recupera datas de envio, resposta e flags Sem tratativa por nota fiscal. Marcacoes existentes nao sao substituidas.")
-            if st.button("Verificar backup das marcacoes", use_container_width=True):
-                try:
-                    st.session_state["analysis_restore_preview"] = restore_analysis_marks_from_github()
-                except Exception as exc:
-                    st.error(f"Nao foi possivel receber as marcacoes: {exc}")
-            preview = st.session_state.get("analysis_restore_preview")
-            if preview:
-                st.write({"No backup": preview["backup"], "Prontas para recuperar": preview["ready"], "Sem viagem": preview["missing"], "Ambiguas": preview["ambiguous"], "Invalidas": preview["invalid"], "Ja presentes": preview["already_present"]})
-                confirmation_marks = st.text_input("Digite RESTAURAR ANALISE para confirmar", key="confirm_analysis_restore")
-                if st.button("Aplicar marcacoes", disabled=not preview["ready"] or confirmation_marks.strip().upper() != "RESTAURAR ANALISE", use_container_width=True):
+                    st.error(f"Falha ao consultar GitHub: {exc}")
+            versions = st.session_state.get("estadias_github_versions") or []
+            if versions:
+                selection = st.selectbox("Copia para recuperar", [item["label"] for item in versions])
+                confirmation = st.text_input("Digite RESTAURAR GITHUB para substituir o banco", key="confirm_github_restore")
+                if st.button("Restaurar copia do GitHub", disabled=confirmation.strip().upper() != "RESTAURAR GITHUB", use_container_width=True):
                     try:
-                        result = restore_analysis_marks_from_github(str(st.session_state.get("username") or ""), dry_run=False)
-                        st.session_state["analysis_restore_result"] = result
-                        st.session_state["skip_next_auto_backup"] = True
+                        st.session_state["estadias_database_restore_result"] = restore_github_version(selection)
                         st.rerun()
                     except Exception as exc:
-                        st.error(f"Falha ao recuperar as marcacoes: {exc}")
-            result = st.session_state.pop("analysis_restore_result", None)
-            if result:
-                st.success(f"{result['restored']} marcacao(oes) recuperada(s) do GitHub.")
-    counts = table_counts(BACKUP_TABLES)
-    import_counts = imported_database_counts()
-    total = sum(counts.values())
-    import_total = sum(import_counts.values())
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tabelas resultado", len(counts))
-    c2.metric("Registros resultado", total)
-    c3.metric("Tabelas importacao", len(import_counts))
-    c4.metric("Registros importacao", import_total)
-    stamp = brasilia_now().strftime("%Y%m%d_%H%M%S")
-    col1, col2 = st.columns(2)
-    if col1.button("Preparar resultado JSON", use_container_width=True, disabled=total <= 0):
-        try:
-            st.download_button(
-                "Baixar resultado JSON preparado",
-                backup_json_bytes(),
-                f"estadias_resultado_{stamp}.json",
-                "application/json",
-                use_container_width=True,
-            )
-        except Exception as exc:
-            st.error(f"Nao foi possivel preparar o JSON de resultado: {exc}")
-    if col2.button("Preparar resultado Excel", use_container_width=True, disabled=total <= 0):
-        try:
-            st.download_button(
-                "Baixar resultado Excel preparado",
-                dataframe_to_excel(all_database_tables()),
-                f"estadias_resultado_{stamp}.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        except Exception as exc:
-            st.error(f"Nao foi possivel preparar o Excel de resultado: {exc}")
+                        st.error(f"Falha ao restaurar: {exc}")
+            if st.toggle("Recuperar marcacoes de analise", key="show_restore_marks"):
+                if st.button("Verificar marcacoes", use_container_width=True):
+                    try:
+                        st.session_state["analysis_restore_preview"] = restore_analysis_marks_from_github()
+                    except Exception as exc:
+                        st.error(f"Falha ao consultar marcacoes: {exc}")
+                marks = st.session_state.get("analysis_restore_preview")
+                if marks:
+                    st.caption(f"Prontas: {marks['ready']} | Sem viagem: {marks['missing']} | Ja presentes: {marks['already_present']}")
+                    confirm_marks = st.text_input("Digite RESTAURAR ANALISE", key="confirm_analysis_restore")
+                    if st.button("Aplicar marcacoes", disabled=not marks["ready"] or confirm_marks.strip().upper() != "RESTAURAR ANALISE", use_container_width=True):
+                        try:
+                            result = restore_analysis_marks_from_github(str(st.session_state.get("username") or ""), dry_run=False)
+                            st.session_state["analysis_restore_result"] = result
+                            st.session_state["skip_next_auto_backup"] = True
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Falha ao recuperar marcacoes: {exc}")
+                restored_marks = st.session_state.pop("analysis_restore_result", None)
+                if restored_marks:
+                    st.success(f"{restored_marks['restored']} marcacoes recuperadas.")
 
-    prep1, prep2 = st.columns(2)
-    if prep1.button("Preparar JSON das importacoes", use_container_width=True, disabled=import_total <= 0):
-        try:
-            st.download_button(
-                "Baixar importacoes JSON preparado",
-                import_backup_json_bytes(),
-                f"estadias_importacoes_{stamp}.json",
-                "application/json",
-                use_container_width=True,
-            )
-        except Exception as exc:
-            st.error(f"Nao foi possivel preparar o JSON das importacoes: {exc}")
-    if prep2.button("Preparar ZIP completo", use_container_width=True, disabled=(total + import_total) <= 0):
-        try:
-            st.download_button(
-                "Baixar ZIP completo preparado",
-                _database_zip(),
-                f"backup_completo_estadias_{stamp}.zip",
-                "application/zip",
-                use_container_width=True,
-            )
-        except Exception as exc:
-            st.error(f"Nao foi possivel preparar o ZIP completo: {exc}")
+    with st.expander("Recuperar dados"):
+        if copies:
+            slot = st.selectbox("Copia do Supabase", list(copies))
+            if st.button("Preparar copia do Supabase", use_container_width=True):
+                try:
+                    st.session_state["estadias_supabase_download"] = (slot, supabase_results_backup.download(slot))
+                except Exception as exc:
+                    st.error(f"Falha ao preparar copia: {exc}")
+            prepared = st.session_state.get("estadias_supabase_download")
+            if prepared and prepared[0] == slot:
+                st.download_button("Baixar copia JSON", prepared[1], f"estadias_resultado_{slot}.json", "application/json", use_container_width=True)
+        restored = st.session_state.get("estadias_database_restore_result")
+        if isinstance(restored, dict):
+            st.success(f"Ultima recuperacao: {restored.get('restored', 0)} restaurados, {restored.get('errors', 0)} erros.")
+        uploaded = st.file_uploader("Arquivo JSON de backup", type=["json"], key="database_backup_upload")
+        mode = st.radio("Modo", ["Mesclar", "Substituir"], horizontal=True)
+        confirmation = st.text_input("Digite RESTAURAR para substituir", key="confirm_json_restore") if mode == "Substituir" else ""
+        if st.button("Importar backup", disabled=uploaded is None or (mode == "Substituir" and confirmation.strip().upper() != "RESTAURAR"), use_container_width=True):
+            try:
+                st.session_state["estadias_database_restore_result"] = restore_json_bytes(
+                    uploaded.getvalue(), "replace" if mode == "Substituir" else "merge"
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Falha ao importar backup: {exc}")
 
-    st.divider()
-    st.subheader("Limpar residuos das importacoes")
-    st.warning("Remove somente LCTE, RASTREADOR e logs de importacao. Os resultados calculados, conclusoes, auditoria e configuracoes ficam preservados.")
-    confirm_residue = st.text_input("Digite LIMPAR RESIDUOS para liberar", key="confirm_clear_import_residues")
-    if st.button(
-        "Limpar residuos das importacoes",
-        type="primary",
-        use_container_width=True,
-        disabled=confirm_residue.strip().upper() != "LIMPAR RESIDUOS",
-    ):
-        result = clear_estadias_import_residues()
-        deleted = result.get("deleted") or {}
-        for key in list(st.session_state):
-            if str(key).startswith(("estadias_lcte_", "estadias_control_", "estadias_rastreador_", "estadias_last_tracker_import")):
-                del st.session_state[key]
-        st.success(f"Residuos limpos. Registros removidos: {int(result.get('total_deleted') or 0)}.")
-        if result.get("message"):
-            st.caption(str(result.get("message")))
-        if deleted:
-            st.dataframe(pd.DataFrame([{"tabela": key, "registros_removidos": value} for key, value in deleted.items()]), use_container_width=True, hide_index=True)
-
-    with st.expander("Zerar banco operacional completo", expanded=False):
-        st.error("Remove importacoes, resultados, analises, posicoes resumidas, conclusoes, auditoria, logs, locais, parametros e preferencias. Mantem somente a estrutura e configuracoes internas.")
-        confirm_full = st.text_input("Digite ZERAR BANCO para liberar", key="confirm_clear_full_database")
-        if st.button(
-            "Zerar banco completo",
-            type="primary",
-            use_container_width=True,
-            disabled=confirm_full.strip().upper() != "ZERAR BANCO",
-        ):
+    with st.expander("Manutencao do banco"):
+        st.warning("As acoes abaixo removem dados operacionais. Confirme somente apos verificar uma copia recuperavel.")
+        confirm_residue = st.text_input("Digite LIMPAR RESIDUOS", key="confirm_clear_import_residues")
+        if st.button("Limpar residuos das importacoes", disabled=confirm_residue.strip().upper() != "LIMPAR RESIDUOS", use_container_width=True):
+            result = clear_estadias_import_residues()
+            st.success(f"{int(result.get('total_deleted') or 0)} registros removidos; resultados preservados.")
+        confirm_full = st.text_input("Digite ZERAR BANCO", key="confirm_clear_full_database")
+        if st.button("Zerar banco operacional completo", disabled=confirm_full.strip().upper() != "ZERAR BANCO", use_container_width=True):
             result = clear_estadias_full_database()
-            deleted = result.get("deleted") or {}
             for key in list(st.session_state):
                 if str(key).startswith("estadias_"):
                     del st.session_state[key]
-            st.success(f"Banco operacional zerado. Registros removidos: {int(result.get('total_deleted') or 0)}.")
-            if result.get("message"):
-                st.caption(str(result.get("message")))
-            if deleted:
-                st.dataframe(pd.DataFrame([{"tabela": key, "registros_removidos": value} for key, value in deleted.items()]), use_container_width=True, hide_index=True)
+            st.success(f"{int(result.get('total_deleted') or 0)} registros removidos.")
             st.rerun()
-
-    st.divider()
-    st.subheader("Importar backup JSON")
-    last_restore = st.session_state.get("estadias_database_restore_result")
-    if isinstance(last_restore, dict):
-        schema_label = "completo" if last_restore.get("schema") == "estadias_completo_v1" else ("importacoes" if last_restore.get("schema") == "estadias_importacoes_backup_v1" else "resultados")
-        st.success(
-            f"Ultimo backup de {schema_label} importado. "
-            f"Restaurados: {last_restore.get('restored', 0)} | "
-            f"Ignorados: {last_restore.get('ignored', 0)} | "
-            f"Erros: {last_restore.get('errors', 0)}"
-        )
-        per_table = last_restore.get("per_table") or {}
-        if per_table:
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "tabela": table,
-                            "linhas_no_json": values.get("arquivo", 0),
-                            "restaurados": values.get("restaurados", 0),
-                            "ignorados": values.get("ignorados", 0),
-                            "erros": values.get("erros", 0),
-                        }
-                        for table, values in per_table.items()
-                    ]
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        if last_restore.get("schema") == "estadias_importacoes_backup_v1":
-            st.warning("Esse JSON contem bases de importacao, nao o painel final. Para aparecer no Cruzamento, importe tambem o JSON de resultados ou recalcule apos importar LCTE e rastreador.")
-    uploaded = st.file_uploader("Arquivo JSON de resultado ou importacoes", type=["json"], key="database_backup_upload")
-    mode_label = st.radio("Modo de importacao", ["Substituir banco atual", "Mesclar com banco atual"], horizontal=True)
-    mode = "replace" if mode_label.startswith("Substituir") else "merge"
-    confirm = ""
-    if mode == "replace":
-        st.warning("Substituir apaga somente o grupo do JSON importado: resultado ou importacoes. Backup vazio nao substitui dados existentes.")
-        confirm = st.text_input("Digite RESTAURAR para liberar a substituicao")
-    disabled = uploaded is None or (mode == "replace" and confirm.strip().upper() != "RESTAURAR")
-    if st.button("Importar banco", type="primary", use_container_width=True, disabled=disabled):
-        try:
-            result = restore_json_bytes(uploaded.getvalue(), mode)
-            st.session_state["estadias_database_restore_result"] = result
-            schema_label = "completo" if result.get("schema") == "estadias_completo_v1" else ("importacoes" if result.get("schema") == "estadias_importacoes_backup_v1" else "resultados")
-            st.success(f"Backup de {schema_label} importado. Restaurados: {result.get('restored', 0)} | Ignorados: {result.get('ignored', 0)}")
-            st.caption("Depois de importar resultado e importacoes, use Recalcular regras no Cruzamento para aplicar a logica atual.")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Nao foi possivel importar o banco: {exc}")
 
 
 def main() -> None:
@@ -453,7 +306,7 @@ def main() -> None:
         start_analysis_backup_scheduler()
     if st.sidebar.button("Atualizar pagina", use_container_width=True):
         st.rerun()
-    render_brand_header("Estadias", "Sistema independente com banco proprio e backup direto no GitHub.")
+    render_brand_header("Estadias", "Sistema independente com backup de resultados no Supabase e copia no GitHub.")
     if st.session_state.pop("next_menu", None) == "Importação":
         st.session_state["main_menu"] = "Importação"
     if st.session_state.get("main_menu") not in MENU:
