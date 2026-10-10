@@ -987,10 +987,13 @@ def _safe_bool_value(value: object) -> bool:
 def _format_datetime_display(value: object) -> str:
     if value is None or str(value).strip() == "":
         return ""
-    parsed = pd.to_datetime(pd.Series([value]), errors="coerce").iloc[0]
+    raw = str(value).strip()
+    parsed = pd.to_datetime(value, dayfirst=not bool(re.match(r"^\d{4}-\d\d-\d\d", raw)), errors="coerce")
     if pd.isna(parsed):
-        return str(value)
-    return parsed.strftime("%d/%m/%Y %H:%M")
+        return raw
+    if parsed.tzinfo:
+        parsed = parsed.tz_convert("America/Sao_Paulo")
+    return parsed.strftime("%d/%m/%Y %H:%M" if re.search(r"\d{1,2}:\d{2}", raw) or isinstance(value, datetime) else "%d/%m/%Y")
 
 
 def _format_cross_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -2292,7 +2295,10 @@ def render_cross_page(usuario: str) -> None:
     for suffix in ("Carga", "Descarga"):
         mandatory.extend(f"{field} {suffix}" for field in ("Conferência", "Motivo conferência", "Sem tratativa"))
     table_columns = list(dict.fromkeys([*visible_columns, *mandatory]))
-    table = filtered[[column for column in table_columns if column in filtered.columns]]
+    table = filtered[[column for column in table_columns if column in filtered.columns]].copy()
+    for column in (*DATE_DISPLAY_COLUMNS, "Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL", "Data Emissao NF", "Enviada em", "Respondida em", "Prazo resposta", "Chegada Rastreador Carga", "Saida Rastreador Carga", "Chegada Rastreador Descarga", "Saida Rastreador Descarga"):
+        if column in table.columns:
+            table[column] = table[column].map(_format_datetime_display)
     col_b.download_button(
         "Relatorio com regras",
         dataframe_to_excel({"regras": table}),

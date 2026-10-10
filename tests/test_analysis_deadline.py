@@ -19,11 +19,16 @@ sys.modules.setdefault("streamlit", streamlit)
 from src.modules.estadias import repository
 from src.database.connection import DatabaseConfig, DbConnection
 from src.database.migrations import create_modular_tables
-from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _configured_columns, _gps_permanence_report, _gps_verification_table
+from src.modules.estadias.page import _analysis_deadline_status, _apply_summary_filters, _apply_validation_card, _build_cross_summary_table, _build_trip_summary_table, _charge_rule_status, _conference_suggestion, _apply_conference, _apply_situation_card, _configured_columns, _format_datetime_display, _gps_permanence_report, _gps_verification_table
 from estadias_app import github_backup
 
 
 class AnalysisDeadlineTest(unittest.TestCase):
+    def test_dates_display_in_brazilian_order_and_keep_time(self):
+        self.assertEqual(_format_datetime_display("2026-09-05"), "05/09/2026")
+        self.assertEqual(_format_datetime_display("05/09/2026 14:30"), "05/09/2026 14:30")
+        self.assertEqual(_format_datetime_display("2026-09-05T17:30:00+00:00"), "05/09/2026 14:30")
+
     def test_full_clear_removes_analysis_and_positions_but_keeps_configuration(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "clear.sqlite"
