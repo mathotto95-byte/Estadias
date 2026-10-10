@@ -43,7 +43,8 @@ def _connect():
     url = _read_secret("ESTADIAS_RESULTADOS_DATABASE_URL").strip()
     if not url:
         raise ValueError("Configure ESTADIAS_RESULTADOS_DATABASE_URL nos Secrets do app.")
-    return _connect_postgres(url)
+    password = _read_secret("ESTADIAS_RESULTADOS_DB_PASSWORD")
+    return _connect_postgres(url, **({"password": password} if password else {}))
 
 
 def status() -> dict[str, Any]:

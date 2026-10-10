@@ -7,6 +7,15 @@ from src.modules.estadias.repository import CROSS_TABLE
 
 
 class SupabaseResultsBackupTest(unittest.TestCase):
+    def test_separate_password_overrides_url_password(self):
+        secrets = {
+            "ESTADIAS_RESULTADOS_DATABASE_URL": "postgresql://user:old@host:5432/postgres",
+            "ESTADIAS_RESULTADOS_DB_PASSWORD": "new@password",
+        }
+        with patch.object(backup, "_read_secret", side_effect=secrets.get), patch.object(backup, "_connect_postgres") as connect:
+            backup._connect()
+        connect.assert_called_once_with(secrets["ESTADIAS_RESULTADOS_DATABASE_URL"], password="new@password")
+
     def test_connection_summary_never_exposes_password(self):
         url = "postgresql://estadias_backup.ref:secret@aws-1-sa-east-1.pooler.supabase.com:5432/postgres"
         with patch.object(backup, "_read_secret", return_value=url):

@@ -112,13 +112,13 @@ def _connect_sqlite(path: Path) -> DbConnection:
     return DbConnection(conn, "sqlite")
 
 
-def _connect_postgres(database_url: str) -> DbConnection:
+def _connect_postgres(database_url: str, **connect_kwargs: Any) -> DbConnection:
     try:
         import psycopg2
         from psycopg2.extras import DictCursor
     except ImportError as exc:
         raise DatabaseConnectionError("psycopg2-binary nao instalado.") from exc
-    conn = psycopg2.connect(database_url, cursor_factory=DictCursor, options="-c search_path=estadias")
+    conn = psycopg2.connect(database_url, cursor_factory=DictCursor, options="-c search_path=estadias", **connect_kwargs)
     return DbConnection(conn, "postgres")
 
 

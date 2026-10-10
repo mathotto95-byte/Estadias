@@ -196,6 +196,7 @@ def render_backup_page() -> None:
                 st.warning(connection["error"])
             else:
                 st.caption(f"Conexao configurada: {connection['user']} @ {connection['host']}:{connection['port']}")
+            st.caption("A senha pode ser configurada separadamente em ESTADIAS_RESULTADOS_DB_PASSWORD, sem codificacao de URL.")
             check_col, send_col = st.columns(2)
             if check_col.button("Testar Supabase", use_container_width=True):
                 try:
