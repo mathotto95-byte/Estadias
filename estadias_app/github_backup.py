@@ -730,16 +730,23 @@ def restore_payload(payload: dict[str, Any], mode: str = "merge") -> dict[str, A
                 continue
             placeholders = ", ".join("?" for _ in insert_columns)
             sql = f"insert into {table} ({', '.join(insert_columns)}) values ({placeholders})"
-            for row in rows:
+            for row_number, row in enumerate(rows, start=1):
                 try:
                     conn.execute(sql, tuple(row.get(column) for column in insert_columns))
                     restored += 1
                     table_restored += 1
-                except Exception:
+                except Exception as exc:
+                    if getattr(conn, "db_type", "sqlite") == "postgres":
+                        raise ValueError(f"Falha ao restaurar {table} na linha {row_number}; nenhuma alteracao foi aplicada.") from exc
                     errors += 1
                     ignored += 1
                     table_errors += 1
                     table_ignored += 1
+            if getattr(conn, "db_type", "sqlite") == "postgres" and "id" in insert_columns:
+                conn.execute(
+                    f"select setval(pg_get_serial_sequence(?, 'id'), coalesce(max(id), 1), count(*) > 0) from {table}",
+                    (table,),
+                )
             per_table[table] = {"arquivo": len(rows), "restaurados": table_restored, "ignorados": table_ignored, "erros": table_errors}
     try:
         import streamlit as st
