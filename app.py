@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from estadias_app.auth import authenticate, users_missing
+from estadias_app import supabase_results_backup
 from estadias_app.github_backup import (
     BACKUP_TABLES,
     all_database_tables,
@@ -186,6 +187,36 @@ def render_backup_page() -> None:
     st.subheader("Backup e recuperacao")
     st.caption("O backup salva resultados e base LCTE normalizada. Posicoes GPS nao fazem parte do backup.")
     st.caption("Copias do GitHub sao restauradas somente por acao manual nesta pagina.")
+    with st.expander("Backup de resultados no Supabase", expanded=True):
+        if not supabase_results_backup.configured():
+            st.info("Configure ESTADIAS_RESULTADOS_DATABASE_URL nos Secrets para habilitar o backup de resultados.")
+        else:
+            check_col, send_col = st.columns(2)
+            if check_col.button("Testar Supabase", use_container_width=True):
+                try:
+                    st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
+                    st.success("Conexao e tabela de backup confirmadas.")
+                except Exception as exc:
+                    st.error(f"Falha no Supabase: {exc}")
+            if send_col.button("Enviar resultados ao Supabase", use_container_width=True):
+                try:
+                    result = supabase_results_backup.upload()
+                    st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
+                    st.success(f"{result['viagens']} viagem(ns): {result['status'].lower()} ({result['bytes_compactados']} bytes compactados).")
+                except Exception as exc:
+                    st.error(f"Backup nao enviado: {exc}")
+            copies = (st.session_state.get("estadias_supabase_status") or {}).get("copias") or []
+            if copies:
+                st.dataframe(pd.DataFrame(copies), use_container_width=True, hide_index=True)
+                slot = st.selectbox("Copia do Supabase", [item["slot"] for item in copies])
+                if st.button("Preparar copia do Supabase", use_container_width=True):
+                    try:
+                        st.session_state["estadias_supabase_download"] = (slot, supabase_results_backup.download(slot))
+                    except Exception as exc:
+                        st.error(f"Nao foi possivel baixar a copia: {exc}")
+                prepared = st.session_state.get("estadias_supabase_download")
+                if prepared and prepared[0] == slot:
+                    st.download_button("Baixar resultado JSON do Supabase", prepared[1], f"estadias_resultado_{slot}.json", "application/json", use_container_width=True)
     backup_col, test_col = st.columns(2)
     if backup_col.button("Enviar backup para GitHub", use_container_width=True, disabled=not github_backup_configured()):
         st.session_state["last_github_backup_result"] = backup_to_github("manual")
