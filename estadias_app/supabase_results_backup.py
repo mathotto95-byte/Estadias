@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 from src.database.connection import _connect_postgres, _read_secret
 from src.modules.estadias.repository import CROSS_TABLE
@@ -16,6 +17,26 @@ BACKUP_TABLE = "estadias.resultado_backups"
 
 def configured() -> bool:
     return bool(_read_secret("ESTADIAS_RESULTADOS_DATABASE_URL").strip())
+
+
+def connection_summary() -> dict[str, str]:
+    """Return connection coordinates without exposing the password."""
+    url = _read_secret("ESTADIAS_RESULTADOS_DATABASE_URL").strip()
+    if not url:
+        return {"error": "URL de resultados nao configurada."}
+    try:
+        parsed = urlsplit(url)
+        user = parsed.username or ""
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError:
+        return {"error": "URL invalida. Codifique caracteres especiais da senha na URL."}
+    if parsed.scheme not in {"postgresql", "postgres"} or not user or not host:
+        return {"error": "URL incompleta. Confira protocolo, usuario e host."}
+    result = {"user": user, "host": host, "port": str(port or 5432)}
+    if host.endswith(".pooler.supabase.com") and "." not in user:
+        result["error"] = "No pooler, o usuario deve incluir .IDENTIFICADOR_DO_PROJETO."
+    return result
 
 
 def _connect():

@@ -7,6 +7,18 @@ from src.modules.estadias.repository import CROSS_TABLE
 
 
 class SupabaseResultsBackupTest(unittest.TestCase):
+    def test_connection_summary_never_exposes_password(self):
+        url = "postgresql://estadias_backup.ref:secret@aws-1-sa-east-1.pooler.supabase.com:5432/postgres"
+        with patch.object(backup, "_read_secret", return_value=url):
+            summary = backup.connection_summary()
+        self.assertEqual(summary["user"], "estadias_backup.ref")
+        self.assertNotIn("secret", str(summary))
+
+    def test_connection_summary_flags_missing_project_ref(self):
+        url = "postgresql://estadias_backup:secret@aws-1-sa-east-1.pooler.supabase.com:5432/postgres"
+        with patch.object(backup, "_read_secret", return_value=url):
+            self.assertIn("IDENTIFICADOR", backup.connection_summary()["error"])
+
     def test_snapshot_requires_trips_and_ignores_generation_time_for_hash(self):
         with self.assertRaisesRegex(ValueError, "Nao ha resultados"):
             backup._snapshot({"tables": {CROSS_TABLE: []}})
