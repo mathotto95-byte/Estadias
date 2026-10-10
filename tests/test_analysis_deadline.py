@@ -309,9 +309,11 @@ class AnalysisDeadlineTest(unittest.TestCase):
 
     def test_no_treatment_hides_only_marked_line(self):
         cross = pd.DataFrame([{"lcte_id": 1, "nf": "123", "placa_norm": "ABC1234", "encontrou_origem": 1, "encontrou_destino": 1,
+                               "monitoramento": "1234567",
                                "tempo_origem_min": 1500, "tempo_destino_min": 1500, "estadia_carga_min": 60, "estadia_descarga_min": 60,
                                "sem_tratativa_origem": 1, "sem_tratativa_destino": 0}])
         summary = _build_cross_summary_table(cross)
+        self.assertEqual(summary["Monitoramento"].tolist(), ["1234567", "1234567"])
         self.assertEqual(_apply_summary_filters(summary, {"tratativa": "Ativos"})["Tipo"].tolist(), ["DESTINO"])
         self.assertEqual(_apply_summary_filters(summary, {"tratativa": "Sem tratativa"})["Tipo"].tolist(), ["ORIGEM"])
 

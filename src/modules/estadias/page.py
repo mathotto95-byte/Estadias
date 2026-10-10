@@ -847,7 +847,7 @@ PANEL_DEFAULT_COLUMNS = {
         "Concluir",
     ],
     "VIAGENS": [
-        "Placa", "motorista", "Origem", "Destino", "Notas",
+        "Placa", "motorista", "Origem", "Destino", "Notas", "Monitoramento",
         "Previsão de Carga", "Agendamento de Carga",
         "Chegada Rastreador Carga", "Saida Rastreador Carga", "Tempo Rastreador Carga",
         "OTS 2", "OTS 3", "Dentro da Regra Carga",
@@ -1586,6 +1586,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
         "cliente",
         "motorista",
         "monitoramento",
+        "Monitoramento",
         "data_emissao_nf",
         "data_inicio_viagem_referencia",
         "data_hora_carga",
@@ -1704,6 +1705,7 @@ def _build_cross_summary_table(cross: pd.DataFrame) -> pd.DataFrame:
                     "cliente": row.get("cliente") or "",
                     "motorista": row.get("motorista") or "",
                     "monitoramento": row.get("monitoramento") or "",
+                    "Monitoramento": row.get("monitoramento") or "",
                     "data_emissao_nf": row.get("data_emissao_nf") or "",
                     "data_inicio_viagem_referencia": row.get("data_inicio_viagem_referencia") or row.get("data_hora_carga") or row.get("data_operacao") or "",
                     "data_hora_carga": row.get("data_hora_carga") or "",
@@ -2295,6 +2297,8 @@ def render_cross_page(usuario: str) -> None:
     for suffix in ("Carga", "Descarga"):
         mandatory.extend(f"{field} {suffix}" for field in ("Conferência", "Motivo conferência", "Sem tratativa"))
     table_columns = list(dict.fromkeys([*visible_columns, *mandatory]))
+    if "Monitoramento" in filtered.columns and "Monitoramento" not in table_columns:
+        table_columns = _insert_column_after(table_columns, "Monitoramento", "Notas", list(filtered.columns))
     table = filtered[[column for column in table_columns if column in filtered.columns]].copy()
     for column in (*DATE_DISPLAY_COLUMNS, "Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL", "Data Emissao NF", "Enviada em", "Respondida em", "Prazo resposta", "Chegada Rastreador Carga", "Saida Rastreador Carga", "Chegada Rastreador Descarga", "Saida Rastreador Descarga"):
         if column in table.columns:
