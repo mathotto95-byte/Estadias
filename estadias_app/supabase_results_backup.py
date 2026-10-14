@@ -13,7 +13,7 @@ from src.database.connection import _connect_postgres, _read_secret
 from src.modules.estadias.repository import CROSS_TABLE
 from src.utils.timezone import brasilia_now
 
-from estadias_app.github_backup import backup_payload
+from estadias_app.github_backup import _complete_backup_bytes, _valid_complete_backup, backup_payload
 
 
 BACKUP_TABLE = "estadias.resultado_backups"
@@ -72,7 +72,8 @@ def status() -> dict[str, Any]:
 
 
 def _snapshot(payload: dict[str, Any]) -> tuple[bytes, str, int]:
-    trips = len((payload.get("tables") or {}).get(CROSS_TABLE) or [])
+    tables = payload.get("tables") or (payload.get("results") or {}).get("tables") or {}
+    trips = len(tables.get(CROSS_TABLE) or [])
     if not trips:
         raise ValueError("Nao ha resultados de viagens para enviar ao Supabase.")
     stable = {key: value for key, value in payload.items() if key != "generated_at"}
@@ -85,7 +86,7 @@ def preview() -> dict[str, Any]:
     content, digest, trips = _snapshot(backup_payload())
     with _connect() as conn:
         rows = conn.execute(
-            f"select slot, sha256, octet_length(conteudo) from {BACKUP_TABLE}"
+            f"select slot, sha256, octet_length(conteudo) from {BACKUP_TABLE} where slot in ('atual', 'anterior')"
         ).fetchall()
     existing = {str(row[0]): {"sha256": str(row[1]), "bytes": int(row[2])} for row in rows}
     current = existing.get("atual")
@@ -120,6 +121,25 @@ def upload() -> dict[str, Any]:
             conn.execute(
                 f"insert into {BACKUP_TABLE} (slot, gerado_em, viagens, sha256, conteudo) "
                 "values ('atual', now(), ?, ?, ?) "
+                "on conflict (slot) do update set gerado_em = excluded.gerado_em, viagens = excluded.viagens, "
+                "sha256 = excluded.sha256, conteudo = excluded.conteudo",
+                (trips, digest, content),
+            )
+    return {"status": "SUCESSO", "viagens": trips, "bytes_compactados": len(content)}
+
+
+def upload_manual() -> dict[str, Any]:
+    payload_bytes = _complete_backup_bytes()
+    if not _valid_complete_backup(payload_bytes):
+        raise ValueError("Backup completo invalido; copia manual anterior preservada.")
+    content, digest, trips = _snapshot(json.loads(payload_bytes))
+    with _upload_lock:
+        with _connect() as conn:
+            if conn.execute("select to_regclass(?)", (BACKUP_TABLE,)).fetchone()[0] is None:
+                raise ValueError("Tabela estadias.resultado_backups ausente no Supabase.")
+            conn.execute(
+                f"insert into {BACKUP_TABLE} (slot, gerado_em, viagens, sha256, conteudo) "
+                "values ('manual', now(), ?, ?, ?) "
                 "on conflict (slot) do update set gerado_em = excluded.gerado_em, viagens = excluded.viagens, "
                 "sha256 = excluded.sha256, conteudo = excluded.conteudo",
                 (trips, digest, content),
@@ -173,7 +193,7 @@ def start_daily_backup_scheduler() -> None:
 
 
 def download(slot: str = "atual") -> bytes:
-    if slot not in {"atual", "anterior"}:
+    if slot not in {"atual", "anterior", "manual"}:
         raise ValueError("Copia invalida.")
     with _connect() as conn:
         row = conn.execute(f"select sha256, conteudo from {BACKUP_TABLE} where slot = ?", (slot,)).fetchone()

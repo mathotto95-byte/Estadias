@@ -179,7 +179,7 @@ def render_backup_page() -> None:
                 st.session_state["estadias_supabase_preview"] = supabase_results_backup.preview()
             except Exception as exc:
                 st.error(f"Nao foi possivel dimensionar: {exc}")
-        if send_col.button("Enviar resultados", use_container_width=True, disabled=trips <= 0):
+        if send_col.button("Enviar copia rotativa agora", use_container_width=True, disabled=trips <= 0):
             try:
                 result = supabase_results_backup.upload()
                 st.session_state.pop("estadias_supabase_preview", None)
@@ -201,6 +201,14 @@ def render_backup_page() -> None:
                 f"{slot}: {item['viagens']} viagens, {item['bytes_compactados'] / 1048576:.2f} MB"
                 for slot, item in copies.items()
             ))
+
+        if st.button("Salvar backup manual para transferencia", use_container_width=True, disabled=trips <= 0):
+            try:
+                result = supabase_results_backup.upload_manual()
+                st.session_state["estadias_supabase_status"] = supabase_results_backup.status()
+                st.success(f"Copia manual salva: {result['viagens']} viagens. As copias rotativas nao foram alteradas.")
+            except Exception as exc:
+                st.error(f"Backup manual nao enviado: {exc}")
 
     with st.expander("Backup secundario no GitHub"):
         st.caption("Copia independente dos resultados e da base LCTE. Posicoes GPS nao sao incluidas.")
@@ -263,7 +271,8 @@ def render_backup_page() -> None:
                     st.error(f"Falha ao preparar copia: {exc}")
             prepared = st.session_state.get("estadias_supabase_download")
             if prepared and prepared[0] == slot:
-                st.download_button("Baixar copia JSON", prepared[1], f"estadias_resultado_{slot}.json", "application/json", use_container_width=True)
+                filename = "estadias_transferencia_manual.json" if slot == "manual" else f"estadias_resultado_{slot}.json"
+                st.download_button("Baixar copia JSON", prepared[1], filename, "application/json", use_container_width=True)
         restored = st.session_state.get("estadias_database_restore_result")
         if isinstance(restored, dict):
             st.success(f"Ultima recuperacao: {restored.get('restored', 0)} restaurados, {restored.get('errors', 0)} erros.")

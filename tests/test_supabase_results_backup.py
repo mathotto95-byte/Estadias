@@ -85,6 +85,30 @@ class SupabaseResultsBackupTest(unittest.TestCase):
         self.assertEqual(result["status"], "SUCESSO")
         self.assertEqual(conn.execute.call_count, 4)
 
+    def test_manual_upload_does_not_rotate_automatic_copies(self):
+        payload = {"schema": "estadias_completo_v1", "results": {"tables": {CROSS_TABLE: [{"lcte_id": 1}]}}, "imports": {"tables": {}}}
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ("estadias.resultado_backups",)
+        context = MagicMock()
+        context.__enter__.return_value = conn
+        with patch.object(backup, "_complete_backup_bytes", return_value=json.dumps(payload).encode()), patch.object(backup, "_valid_complete_backup", return_value=True), patch.object(backup, "_connect", return_value=context):
+            result = backup.upload_manual()
+        self.assertEqual(result["viagens"], 1)
+        self.assertEqual(conn.execute.call_count, 2)
+        self.assertIn("'manual'", conn.execute.call_args.args[0])
+        self.assertNotIn("'anterior'", conn.execute.call_args.args[0])
+
+    def test_manual_copy_can_be_downloaded(self):
+        payload = {"schema": "estadias_completo_v1", "results": {"tables": {CROSS_TABLE: [{"lcte_id": 1}]}}, "imports": {"tables": {}}}
+        content, digest, _ = backup._snapshot(payload)
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = (digest, content)
+        context = MagicMock()
+        context.__enter__.return_value = conn
+        with patch.object(backup, "_connect", return_value=context):
+            restored = backup.download("manual")
+        self.assertEqual(json.loads(restored)["schema"], "estadias_completo_v1")
+
     def test_download_checks_hash(self):
         payload = {"schema": "estadias_backup_v1", "generated_at": "2026-10-10", "tables": {CROSS_TABLE: [{"lcte_id": 1}]}}
         content, digest, _ = backup._snapshot(payload)
