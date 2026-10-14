@@ -156,6 +156,10 @@ def render_backup_page() -> None:
     c1.metric("Viagens calculadas", trips)
     c2.metric("Supabase", current["gerado_em"][:19].replace("T", " ") if current else ("Sem copia" if saved else "Nao verificado"))
     c3.metric("GitHub secundario", "Configurado" if github_backup_configured() else "Nao configurado")
+    automatic = supabase_results_backup.automatic_status()
+    st.caption("Envio automatico dos resultados: diariamente as 20h (Brasilia), enquanto o app estiver ativo; se estiver suspenso, na proxima inicializacao.")
+    if automatic:
+        st.caption(f"Ultima tentativa automatica: {automatic['data']} | {automatic['status']} | {automatic['viagens'] or '-'} viagens")
 
     if not supabase_results_backup.configured():
         st.warning("Backup Supabase nao configurado.")
@@ -301,6 +305,7 @@ def main() -> None:
     except Exception as exc:
         st.error(f"Banco de dados indisponivel: {exc}")
         st.stop()
+    supabase_results_backup.start_daily_backup_scheduler()
     if get_database_config().db_type != "postgres":
         start_analysis_backup_scheduler()
     if st.sidebar.button("Atualizar pagina", use_container_width=True):

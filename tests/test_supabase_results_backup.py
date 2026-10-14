@@ -1,12 +1,31 @@
 import json
+import sys
+import types
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+
+streamlit = types.ModuleType("streamlit")
+streamlit.cache_data = lambda **kwargs: lambda func: func
+sys.modules.setdefault("streamlit", streamlit)
 
 from estadias_app import supabase_results_backup as backup
 from src.modules.estadias.repository import CROSS_TABLE
 
 
 class SupabaseResultsBackupTest(unittest.TestCase):
+    def test_daily_schedule_runs_at_20_brasilia_and_catches_up(self):
+        before = datetime(2026, 10, 14, 19, 30)
+        after = datetime(2026, 10, 14, 20, 10)
+        self.assertEqual(backup._seconds_until_daily_backup(before, None), 1800)
+        self.assertEqual(backup._seconds_until_daily_backup(after, None), 0)
+        self.assertEqual(backup._seconds_until_daily_backup(after, after.date()), (timedelta(days=1) - timedelta(minutes=10)).total_seconds())
+
+    def test_scheduler_stays_off_without_supabase_connection(self):
+        with patch.object(backup, "configured", return_value=False), patch.object(backup.threading, "Thread") as thread:
+            backup.start_daily_backup_scheduler()
+        thread.assert_not_called()
+
     def test_separate_password_overrides_url_password(self):
         secrets = {
             "ESTADIAS_RESULTADOS_DATABASE_URL": "postgresql://user:old@host:5432/postgres",

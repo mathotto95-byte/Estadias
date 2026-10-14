@@ -3,16 +3,24 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import threading
+import time
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
 from src.database.connection import _connect_postgres, _read_secret
 from src.modules.estadias.repository import CROSS_TABLE
+from src.utils.timezone import brasilia_now
 
 from estadias_app.github_backup import backup_payload
 
 
 BACKUP_TABLE = "estadias.resultado_backups"
+_scheduler_lock = threading.Lock()
+_upload_lock = threading.Lock()
+_scheduler: threading.Thread | None = None
+_last_automatic_attempt: dict[str, str] = {}
 
 
 def configured() -> bool:
@@ -96,26 +104,72 @@ def preview() -> dict[str, Any]:
 
 def upload() -> dict[str, Any]:
     content, digest, trips = _snapshot(backup_payload())
-    with _connect() as conn:
-        if conn.execute("select to_regclass(?)", (BACKUP_TABLE,)).fetchone()[0] is None:
-            raise ValueError("Tabela estadias.resultado_backups ausente no Supabase.")
-        current = conn.execute(f"select sha256 from {BACKUP_TABLE} where slot = 'atual'").fetchone()
-        if current and current[0] == digest:
-            return {"status": "SEM_ALTERACAO", "viagens": trips, "bytes_compactados": len(content)}
-        conn.execute(
-            f"insert into {BACKUP_TABLE} (slot, gerado_em, viagens, sha256, conteudo) "
-            f"select 'anterior', gerado_em, viagens, sha256, conteudo from {BACKUP_TABLE} where slot = 'atual' "
-            "on conflict (slot) do update set gerado_em = excluded.gerado_em, viagens = excluded.viagens, "
-            "sha256 = excluded.sha256, conteudo = excluded.conteudo"
-        )
-        conn.execute(
-            f"insert into {BACKUP_TABLE} (slot, gerado_em, viagens, sha256, conteudo) "
-            "values ('atual', now(), ?, ?, ?) "
-            "on conflict (slot) do update set gerado_em = excluded.gerado_em, viagens = excluded.viagens, "
-            "sha256 = excluded.sha256, conteudo = excluded.conteudo",
-            (trips, digest, content),
-        )
+    with _upload_lock:
+        with _connect() as conn:
+            if conn.execute("select to_regclass(?)", (BACKUP_TABLE,)).fetchone()[0] is None:
+                raise ValueError("Tabela estadias.resultado_backups ausente no Supabase.")
+            current = conn.execute(f"select sha256 from {BACKUP_TABLE} where slot = 'atual'").fetchone()
+            if current and current[0] == digest:
+                return {"status": "SEM_ALTERACAO", "viagens": trips, "bytes_compactados": len(content)}
+            conn.execute(
+                f"insert into {BACKUP_TABLE} (slot, gerado_em, viagens, sha256, conteudo) "
+                f"select 'anterior', gerado_em, viagens, sha256, conteudo from {BACKUP_TABLE} where slot = 'atual' "
+                "on conflict (slot) do update set gerado_em = excluded.gerado_em, viagens = excluded.viagens, "
+                "sha256 = excluded.sha256, conteudo = excluded.conteudo"
+            )
+            conn.execute(
+                f"insert into {BACKUP_TABLE} (slot, gerado_em, viagens, sha256, conteudo) "
+                "values ('atual', now(), ?, ?, ?) "
+                "on conflict (slot) do update set gerado_em = excluded.gerado_em, viagens = excluded.viagens, "
+                "sha256 = excluded.sha256, conteudo = excluded.conteudo",
+                (trips, digest, content),
+            )
     return {"status": "SUCESSO", "viagens": trips, "bytes_compactados": len(content)}
+
+
+def _seconds_until_daily_backup(now: datetime, last_success: date | None) -> float:
+    today_at_20 = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    if now >= today_at_20 and last_success != now.date():
+        return 0.0
+    target = today_at_20 if now < today_at_20 else today_at_20 + timedelta(days=1)
+    return max(0.0, (target - now).total_seconds())
+
+
+def automatic_status() -> dict[str, str]:
+    return _last_automatic_attempt.copy()
+
+
+def start_daily_backup_scheduler() -> None:
+    global _scheduler
+    if not configured():
+        return
+    with _scheduler_lock:
+        if _scheduler and _scheduler.is_alive():
+            return
+
+        def run() -> None:
+            last_success: date | None = None
+            while True:
+                time.sleep(_seconds_until_daily_backup(brasilia_now(), last_success))
+                attempted_at = brasilia_now()
+                try:
+                    result = upload()
+                    _last_automatic_attempt.update(
+                        data=attempted_at.strftime("%d/%m/%Y %H:%M"),
+                        status=result["status"],
+                        viagens=str(result["viagens"]),
+                    )
+                    last_success = attempted_at.date()
+                except Exception:
+                    _last_automatic_attempt.update(
+                        data=attempted_at.strftime("%d/%m/%Y %H:%M"),
+                        status="ERRO",
+                        viagens="",
+                    )
+                    time.sleep(15 * 60)
+
+        _scheduler = threading.Thread(target=run, daemon=True, name="estadias-supabase-backup-20h")
+        _scheduler.start()
 
 
 def download(slot: str = "atual") -> bytes:
