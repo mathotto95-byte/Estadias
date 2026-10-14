@@ -210,6 +210,21 @@ def render_backup_page() -> None:
             except Exception as exc:
                 st.error(f"Backup manual nao enviado: {exc}")
 
+        if get_database_config().db_type == "postgres":
+            if st.button("Sincronizar dados nesta maquina", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+            st.caption("As maquinas conectadas ao mesmo PostgreSQL compartilham os dados automaticamente.")
+        else:
+            st.caption("Na maquina secundaria, a sincronizacao substitui os dados locais pela copia manual do Supabase.")
+            confirm_sync = st.text_input("Digite SINCRONIZAR para substituir os dados locais", key="confirm_manual_sync")
+            if st.button("Sincronizar dados nesta maquina", disabled=confirm_sync.strip().upper() != "SINCRONIZAR", use_container_width=True):
+                try:
+                    st.session_state["estadias_database_restore_result"] = supabase_results_backup.sync_manual_to_local()
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Falha na sincronizacao: {exc}")
+
     with st.expander("Backup secundario no GitHub"):
         st.caption("Copia independente dos resultados e da base LCTE. Posicoes GPS nao sao incluidas.")
         if not github_backup_configured():

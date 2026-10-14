@@ -109,6 +109,26 @@ class SupabaseResultsBackupTest(unittest.TestCase):
             restored = backup.download("manual")
         self.assertEqual(json.loads(restored)["schema"], "estadias_completo_v1")
 
+    def test_secondary_sync_restores_only_valid_manual_copy(self):
+        config = MagicMock(db_type="sqlite")
+        content = b'{"schema":"estadias_completo_v1"}'
+        with patch.object(backup, "get_database_config", return_value=config), patch.object(backup, "download", return_value=content) as download, patch.object(backup, "_valid_complete_backup", return_value=True), patch.object(backup, "restore_json_bytes", return_value={"status": "SUCESSO"}) as restore:
+            self.assertEqual(backup.sync_manual_to_local()["status"], "SUCESSO")
+        download.assert_called_once_with("manual")
+        restore.assert_called_once_with(content, mode="replace")
+
+    def test_secondary_sync_preserves_local_data_if_copy_is_invalid(self):
+        with patch.object(backup, "get_database_config", return_value=MagicMock(db_type="sqlite")), patch.object(backup, "download", return_value=b"{}"), patch.object(backup, "_valid_complete_backup", return_value=False), patch.object(backup, "restore_json_bytes") as restore:
+            with self.assertRaisesRegex(ValueError, "incompleta"):
+                backup.sync_manual_to_local()
+        restore.assert_not_called()
+
+    def test_secondary_sync_does_not_replace_shared_postgres(self):
+        with patch.object(backup, "get_database_config", return_value=MagicMock(db_type="postgres")), patch.object(backup, "download") as download:
+            with self.assertRaisesRegex(ValueError, "compartilhado"):
+                backup.sync_manual_to_local()
+        download.assert_not_called()
+
     def test_download_checks_hash(self):
         payload = {"schema": "estadias_backup_v1", "generated_at": "2026-10-10", "tables": {CROSS_TABLE: [{"lcte_id": 1}]}}
         content, digest, _ = backup._snapshot(payload)

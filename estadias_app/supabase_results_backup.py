@@ -9,11 +9,11 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from src.database.connection import _connect_postgres, _read_secret
+from src.database.connection import _connect_postgres, _read_secret, get_database_config
 from src.modules.estadias.repository import CROSS_TABLE
 from src.utils.timezone import brasilia_now
 
-from estadias_app.github_backup import _complete_backup_bytes, _valid_complete_backup, backup_payload
+from estadias_app.github_backup import _complete_backup_bytes, _valid_complete_backup, backup_payload, restore_json_bytes
 
 
 BACKUP_TABLE = "estadias.resultado_backups"
@@ -206,3 +206,12 @@ def download(slot: str = "atual") -> bytes:
     if digest != row[0]:
         raise ValueError("Falha de integridade na copia do Supabase.")
     return content
+
+
+def sync_manual_to_local() -> dict[str, Any]:
+    if get_database_config().db_type != "sqlite":
+        raise ValueError("O banco PostgreSQL operacional ja e compartilhado. Atualize a pagina para ver os dados.")
+    content = download("manual")
+    if not _valid_complete_backup(content):
+        raise ValueError("Copia manual incompleta; banco local preservado.")
+    return restore_json_bytes(content, mode="replace")
