@@ -2304,9 +2304,9 @@ def render_cross_page(usuario: str) -> None:
         if column in table.columns:
             table[column] = table[column].map(_format_datetime_display)
     col_b.download_button(
-        "Relatorio com regras",
-        dataframe_to_excel({"regras": table}),
-        "estadias_regras.xlsx",
+        "Exportar viagens Excel",
+        dataframe_to_excel({"viagens_com_regras": table}),
+        "estadias_viagens.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         disabled=table.empty,
