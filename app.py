@@ -27,7 +27,6 @@ from src.modules.estadias.page import (
     render_cross_page,
     render_gps_verification_page,
     render_imports_page,
-    render_ots_otd_page,
 )
 from src.utils.rw_theme import apply_theme, render_brand_header, render_login_header, render_sidebar_logo
 
@@ -36,7 +35,6 @@ MENU = [
     "Importação",
     "Estadias",
     "Conferência GPS",
-    "OTS e OTD",
     "Backup do Banco",
 ]
 
@@ -348,8 +346,6 @@ def main() -> None:
         render_cross_page(username)
     elif page == "Conferência GPS":
         render_gps_verification_page()
-    elif page == "OTS e OTD":
-        render_ots_otd_page()
     elif page == "Backup do Banco":
         render_backup_page()
 

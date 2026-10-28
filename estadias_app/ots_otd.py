@@ -12,6 +12,49 @@ from estadias_app.ots_otd_rules import RULES, UNKNOWN, _date, _text, avaliar_reg
 
 FIELDS = ("Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL")
 REQUIRED = {"id", "previsao_carga", "data_limite", "agendamento_carga", "agenda_gfl", "codigo_monitoramento", "data_hora_registro"}
+IMPORT_COLUMNS = {
+    "ID": "id",
+    "Previsao Carga": "previsao_carga",
+    "Previsão Carga": "previsao_carga",
+    "Data Limite": "data_limite",
+    "Agendamento Carga": "agendamento_carga",
+    "Agenda GFL": "agenda_gfl",
+    "Codigo de Monitoramento": "codigo_monitoramento",
+    "Código de Monitoramento": "codigo_monitoramento",
+    "Data Hora Registro": "data_hora_registro",
+    "Data/Hora Registro": "data_hora_registro",
+    "Justificativa Selecao": "justificativa_selecao",
+    "Justificativa Seleção": "justificativa_selecao",
+}
+
+
+def import_spreadsheet(file) -> tuple[dict, pd.DataFrame]:
+    """Lê a planilha do OTS/OTD e devolve linhas editáveis antes da aplicação."""
+    name = str(getattr(file, "name", "")).lower()
+    frame = pd.read_csv(file, sep=None, engine="python") if name.endswith(".csv") else pd.read_excel(file)
+    return _validate_import_frame(frame)
+
+
+def _validate_import_frame(frame: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+    frame = frame.rename(columns={column: IMPORT_COLUMNS.get(str(column).strip(), str(column).strip()) for column in frame.columns})
+    missing = sorted(REQUIRED - set(frame.columns))
+    if missing:
+        raise ValueError("Colunas obrigatórias ausentes: " + ", ".join(missing))
+    frame = frame.where(pd.notna(frame), "")
+    frame["id"] = pd.to_numeric(frame["id"], errors="coerce")
+    if frame["id"].isna().any() or frame["id"].duplicated().any():
+        raise ValueError("A coluna ID precisa conter valores numéricos únicos.")
+    frame["id"] = frame["id"].astype(int)
+    frame["codigo_monitoramento"] = frame["codigo_monitoramento"].astype(str).str.strip().str.upper()
+    invalid_codes = ~frame["codigo_monitoramento"].str.fullmatch(r"\d{7}")
+    if invalid_codes.any():
+        raise ValueError(f"Há {int(invalid_codes.sum())} código(s) de monitoramento diferente(s) de 7 dígitos.")
+    rows = frame.to_dict("records")
+    return {"schema": "ots_otd_backup_v1", "records": len(rows), "rows": rows, "generated_at": "Importação manual"}, frame
+
+
+def import_dataframe(frame: pd.DataFrame) -> dict:
+    return _validate_import_frame(frame)[0]
 
 
 def _registro_local(row):

@@ -40,8 +40,23 @@ def _compare(actual, deadline):
     return "Dentro do prazo" if a <= b else "Fora do prazo"
 
 
+def _compare_not_before(actual, deadline):
+    a, b = _date(actual), _date(deadline)
+    if pd.isna(a) or pd.isna(b):
+        return UNKNOWN
+    if a.tzinfo:
+        a = a.tz_convert("America/Sao_Paulo").tz_localize(None)
+    if b.tzinfo:
+        b = b.tz_convert("America/Sao_Paulo").tz_localize(None)
+    if not re.search(r"\d{1,2}:\d{2}", _text(deadline)):
+        return "Dentro do prazo" if a.date() >= b.date() else "Fora do prazo"
+    if not re.search(r"\d{1,2}:\d{2}", _text(actual)) and a.date() == b.date():
+        return UNKNOWN
+    return "Dentro do prazo" if a >= b else "Fora do prazo"
+
+
 def calcular_ots2(schedule, **_):
-    return _compare(schedule.get("agendamento_carga"), schedule.get("previsao_carga"))
+    return _compare_not_before(schedule.get("agendamento_carga"), schedule.get("previsao_carga"))
 
 
 def calcular_ots3(schedule, origem=None, **_):
@@ -55,9 +70,7 @@ def calcular_otd1(schedule, emissao_nf=None, **_):
 
 def calcular_otd2(schedule, destino=None, **_):
     deadline = schedule.get("data_limite")
-    status = _compare(schedule.get("agenda_gfl"), deadline)
-    if status == "Fora do prazo" and _compare(destino, deadline) == "Dentro do prazo":
-        status = "Dentro do prazo"
+    status = _compare_not_before(schedule.get("agenda_gfl"), deadline)
     dia_limite = _day(deadline)
     if dia_limite and dia_limite.weekday() == 6:
         return "Dentro do prazo" if _day(destino) == dia_limite else "Fora do prazo"

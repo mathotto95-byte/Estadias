@@ -616,7 +616,7 @@ def render_imports_page(usuario: str, role: str) -> None:
             st.success(f"LCTE limpo. Registros removidos: {sum(deleted.values())}.")
             st.rerun()
         upload_key = f"estadias_lcte_upload_{int(st.session_state.get('estadias_lcte_upload_version', 0))}"
-        lcte_file = st.file_uploader("Arquivo LCTE Ipiranga", type=["xlsx", "xls", "csv"], key=upload_key)
+        lcte_file = st.file_uploader("Arquivo LCTE Ipiranga", type=["csv"], key=upload_key)
         lcte_mode = _duplicate_mode(role, "estadias_lcte_duplicate_mode")
         if st.button("Importar LCTE Ipiranga", type="primary", use_container_width=True, disabled=lcte_file is None):
             with st.spinner("Importando LCTE Ipiranga..."):
@@ -645,7 +645,7 @@ def render_imports_page(usuario: str, role: str) -> None:
         st.session_state.setdefault("estadias_pgadmin_upload_version", 0)
         tracker_files = st.file_uploader(
             "Relatorios do rastreador",
-            type=["xlsx", "xls", "csv"],
+            type=["csv"],
             accept_multiple_files=True,
             key=f"estadias_rastreador_upload_{int(st.session_state.get('estadias_rastreador_upload_version', 0))}",
         )
@@ -747,6 +747,34 @@ def render_imports_page(usuario: str, role: str) -> None:
                 st.success(f"Rastreador bruto limpo: {cleanup.get('total_deleted', 0)} registro(s) removidos.")
                 st.caption("Para recalcular com novas regras, reimporte o CSV na tela de Estadias.")
             render_dataframe(last_tracker_result.get("resultado"), height=360, max_rows=200)
+
+    with st.expander("Importar OTS e OTD", expanded=True):
+        st.caption("Importe o CSV, revise/trate os registros e aplique somente após a conferência.")
+        st.session_state.setdefault("ots_otd_manual_upload_version", 0)
+        ots_file = st.file_uploader(
+            "CSV do OTS/OTD",
+            type=["csv"],
+            key=f"ots_otd_manual_upload_{int(st.session_state['ots_otd_manual_upload_version'])}",
+        )
+        if ots_file is not None and st.button("Ler CSV do OTS/OTD", use_container_width=True):
+            try:
+                _, editable = ots_otd.import_spreadsheet(ots_file)
+                st.session_state["ots_otd_manual_editable"] = editable
+                st.session_state.pop("ots_otd_manual_error", None)
+            except (ValueError, OSError, pd.errors.ParserError) as exc:
+                st.session_state["ots_otd_manual_error"] = str(exc)
+        if st.session_state.get("ots_otd_manual_error"):
+            st.error(st.session_state["ots_otd_manual_error"])
+        editable = st.session_state.get("ots_otd_manual_editable")
+        if editable is not None:
+            edited = st.data_editor(editable, num_rows="dynamic", use_container_width=True, key="ots_otd_manual_editor_imports")
+            if st.button("Aplicar OTS/OTD tratado", type="primary", use_container_width=True):
+                try:
+                    st.session_state["ots_otd_result"] = ots_otd.import_dataframe(edited)
+                    st.success(f"{len(edited)} registro(s) OTS/OTD aplicado(s) ao Estadias.")
+                    st.session_state["ots_otd_manual_upload_version"] += 1
+                except ValueError as exc:
+                    st.error(str(exc))
 
 
 def _multiselect_filter(table: str, column: str, label: str) -> list[str]:
@@ -1944,6 +1972,10 @@ def _apply_summary_filters(df: pd.DataFrame, filters: dict[str, object]) -> pd.D
         ("Situação análise", "analise"),
         ("Conferência", "conferencia"),
     ]
+    cliente_painel = str(filters.get("cliente_painel") or "Todos")
+    if cliente_painel != "Todos" and "cliente" in filtered.columns:
+        clientes = filtered["cliente"].fillna("").astype(str).str.upper()
+        filtered = filtered[clientes.eq("IPIRANGA")] if cliente_painel == "IPIRANGA" else filtered[~clientes.eq("IPIRANGA")]
     for column, key in text_filters:
         value = str(filters.get(key) or "").strip()
         if value.upper() == "TODOS":
@@ -1985,8 +2017,9 @@ def _render_summary_filters(df: pd.DataFrame) -> dict[str, object]:
     dates = pd.to_datetime(df.get("data_inicio_viagem_referencia", pd.Series(dtype=str)), errors="coerce")
     years = sorted([int(value) for value in dates.dt.year.dropna().unique().tolist()])
     months = sorted([int(value) for value in dates.dt.month.dropna().unique().tolist()])
-    col_a, col_b, col_c, col_d = st.columns(4)
+    col_cliente, col_a, col_b, col_c, col_d = st.columns(5)
     filters = {
+        "cliente_painel": col_cliente.selectbox("Painel do cliente", ["Todos", "IPIRANGA", "Demais clientes"], key="estadias_resumo_cliente"),
         "meses": col_a.multiselect("Mes inicio", months, format_func=lambda value: f"{int(value):02d}", key="estadias_resumo_meses"),
         "anos": col_b.multiselect("Ano", years, key="estadias_resumo_anos"),
         "placa": col_c.text_input("Placa", key="estadias_resumo_placa"),
@@ -2130,10 +2163,31 @@ def _render_summary_detail(summary: pd.DataFrame, cross: pd.DataFrame) -> None:
 def render_ots_otd_page() -> None:
     st.title("OTS e OTD")
     cross = read_cross(200000)
+    st.caption("Importe a planilha do OTS/OTD, trate os dados e aplique somente depois da conferência.")
+    manual_file = st.file_uploader("Planilha OTS/OTD", type=["xlsx", "xls", "csv"], key="ots_otd_manual_file")
+    if manual_file is not None and st.button("Ler planilha para tratamento", use_container_width=True):
+        try:
+            _, editable = ots_otd.import_spreadsheet(manual_file)
+            st.session_state["ots_otd_manual_editable"] = editable
+            st.session_state.pop("ots_otd_manual_error", None)
+        except (ValueError, OSError, pd.errors.ParserError) as exc:
+            st.session_state["ots_otd_manual_error"] = str(exc)
+    if st.session_state.get("ots_otd_manual_error"):
+        st.error(st.session_state["ots_otd_manual_error"])
+    editable = st.session_state.get("ots_otd_manual_editable")
+    if editable is not None:
+        edited = st.data_editor(editable, num_rows="dynamic", use_container_width=True, key="ots_otd_manual_editor")
+        if st.button("Aplicar dados tratados", type="primary", use_container_width=True):
+            try:
+                payload = ots_otd.import_dataframe(edited)
+                st.session_state["ots_otd_result"] = payload
+                st.success(f"{len(edited)} registro(s) OTS/OTD aplicado(s) ao Estadias.")
+            except ValueError as exc:
+                st.error(str(exc))
+        st.divider()
     if cross.empty:
-        st.info("Nenhuma viagem calculada em Estadias.")
+        st.info("Nenhuma viagem calculada em Estadias. A planilha tratada ficará disponível quando houver viagens.")
         return
-    st.caption("Agendamentos recebidos diretamente do OTS/OTD; permanências calculadas pelo GPS do Estadias.")
     if st.button("Atualizar OTS/OTD"):
         try:
             st.session_state["ots_otd_result"] = ots_otd.receive()
@@ -2258,6 +2312,22 @@ def render_cross_page(usuario: str) -> None:
         st.warning(st.session_state.get("ots_otd_load_error", "OTS/OTD não carregado. Clique em Atualizar OTS/OTD."))
     summary = _build_trip_summary_table(_apply_conference(ots_otd.enrich_summary(_build_cross_summary_table(cross), ots_payload)))
     summary["Dentro da Regra Carga"] = summary.apply(_charge_rule_status, axis=1) if not summary.empty else pd.Series(dtype=str)
+    clientes_norm = summary.get("cliente", pd.Series(dtype=str)).fillna("").astype(str).str.upper()
+    painel_ipiranga, painel_demais = st.tabs(["Painel Ipiranga", "Painel Demais clientes"])
+    for painel, dados_painel in (
+        (painel_ipiranga, summary[clientes_norm.eq("IPIRANGA")]),
+        (painel_demais, summary[~clientes_norm.eq("IPIRANGA")]),
+    ):
+        with painel:
+            st.metric("Viagens", len(dados_painel))
+            if dados_painel.empty:
+                st.info("Nenhuma viagem deste painel.")
+            else:
+                st.dataframe(
+                    dados_painel[[c for c in ("Notas", "Placa", "Cliente", "Origem", "Destino", "Status", "Status Estadia") if c in dados_painel.columns]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
     if ots_payload and not summary.empty:
         matched = int(summary["Correspondência OTS/OTD"].eq("Exata").sum())
         st.caption(f"OTS/OTD: {matched} viagem(ns) vinculada(s); {len(summary) - matched} sem vínculo. Confira o motivo nas colunas.")
@@ -2268,6 +2338,7 @@ def render_cross_page(usuario: str) -> None:
         "nota": st.session_state.get("estadias_resumo_nota", ""),
         "origem": st.session_state.get("estadias_resumo_origem", ""),
         "destino": st.session_state.get("estadias_resumo_destino", ""),
+        "cliente_painel": st.session_state.get("estadias_resumo_cliente", "Todos"),
         "tipo": st.session_state.get("estadias_resumo_tipo", ""),
         "status": st.session_state.get("estadias_resumo_status", ""),
         "status_estadia": st.session_state.get("estadias_resumo_status_estadia", ""),

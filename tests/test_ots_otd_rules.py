@@ -15,7 +15,7 @@ class OtsOtdRulesTest(unittest.TestCase):
     def setUp(self):
         self.schedule = {
             "previsao_carga": "30/09/2026 12:00",
-            "agendamento_carga": "30/09/2026 10:00",
+            "agendamento_carga": "30/09/2026 12:00",
             "data_limite": "01/10/2026",
             "agenda_gfl": "01/10/2026 09:00",
             "data_hora_registro": "30/09/2026 08:00",
@@ -28,6 +28,16 @@ class OtsOtdRulesTest(unittest.TestCase):
         self.assertEqual(calcular_otd2(self.schedule, destino="01/10/2026 08:00"), "Dentro do prazo")
         self.assertEqual(calcular_otd3(self.schedule, destino="01/10/2026 08:00"), "Dentro do prazo")
         self.assertEqual(avaliar_regras_viagem(self.schedule, "30/09/2026 09:00", "01/10/2026 08:00", "30/09/2026 11:00")["Dentro da Regra"], "Sim")
+
+    def test_ots2_requires_schedule_at_or_after_forecast(self):
+        self.schedule["agendamento_carga"] = "30/09/2026 10:00"
+        self.assertEqual(calcular_ots2(self.schedule), "Fora do prazo")
+        self.schedule["agendamento_carga"] = "30/09/2026 12:00"
+        self.assertEqual(calcular_ots2(self.schedule), "Dentro do prazo")
+
+    def test_otd2_rejects_gfl_before_deadline(self):
+        self.schedule["agenda_gfl"] = "30/09/2026 23:59"
+        self.assertEqual(calcular_otd2(self.schedule, destino="01/10/2026 08:00"), "Fora do prazo")
 
     def test_missing_data_stays_unknown(self):
         result = avaliar_regras_viagem(self.schedule, emissao_nf=None)

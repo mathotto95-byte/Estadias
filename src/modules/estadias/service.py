@@ -40,6 +40,11 @@ MOTIVOS = {
     "PROCESSAMENTO_COM_ERRO": "Erro tecnico durante o processamento.",
 }
 
+MUNICIPALITY_ALIASES = (
+    {"MARIALVA", "MANDAGUARI"},
+    {"IVINHEMA", "ANGELICA"},
+)
+
 SPECIAL_OPERATIONAL_MUNICIPALITIES = {
     ("PARANAGUA", "PR"): "Paranagua",
     ("SANTOS", "SP"): "Santos",
@@ -275,6 +280,14 @@ def _location_token_mask(series: pd.Series, expected_location: Any) -> pd.Series
     if not expected_tokens:
         return pd.Series([False] * len(series), index=series.index)
     return series.fillna("").astype(str).map(lambda value: expected_tokens.issubset(_location_tokens(value)))
+
+
+def _location_aliases(location: Any) -> set[str]:
+    normalized = normalize_text(location)
+    for group in MUNICIPALITY_ALIASES:
+        if normalized in group:
+            return group
+    return {normalized} if normalized else set()
 
 
 def _location_mask(df: pd.DataFrame, location: str, columns: list[str]) -> pd.Series:
@@ -749,12 +762,14 @@ def _reference_location_mask(df: pd.DataFrame, location: Any, expected_customer:
 
     city_text = _reference_text_series(df, ["cidade"])
     fallback_text = _reference_text_series(df, ["endereco", "referencia", "evento", "status"])
-    city_mask = (
-        _location_token_mask(city_text, city)
-        | _location_token_mask(fallback_text, city)
-        | city_text.str.contains(city, regex=False)
-        | fallback_text.str.contains(city, regex=False)
-    )
+    city_mask = pd.Series([False] * len(df), index=df.index)
+    for alias in _location_aliases(city):
+        city_mask |= (
+            _location_token_mask(city_text, alias)
+            | _location_token_mask(fallback_text, alias)
+            | city_text.str.contains(alias, regex=False)
+            | fallback_text.str.contains(alias, regex=False)
+        )
     if uf_value and "uf" in df.columns:
         uf_text = df["uf"].fillna("").astype(str).map(normalize_text)
         city_mask &= uf_text.eq("") | uf_text.eq(uf_value) | fallback_text.str.contains(f" {uf_value} ", regex=False) | fallback_text.str.endswith(f" {uf_value}")
@@ -1445,10 +1460,14 @@ def _km_percorrido(df: pd.DataFrame) -> float:
 
 def _params_for_trip(trip: pd.Series, parametros: pd.DataFrame, config: dict[str, str]) -> dict[str, float]:
     default_hours = _config_number(config, "franquia_padrao_horas", 24)
-    result = {"franquia_carga_horas": default_hours, "franquia_descarga_horas": default_hours, "valor_hora": _config_number(config, "valor_hora_estadia", 68.40)}
+    cliente = normalize_text(trip.get("cliente"))
+    result = {
+        "franquia_carga_horas": default_hours,
+        "franquia_descarga_horas": 5 if cliente != "IPIRANGA" else default_hours,
+        "valor_hora": _config_number(config, "valor_hora_estadia", 68.40),
+    }
     if parametros.empty:
         return result
-    cliente = normalize_text(trip.get("cliente"))
     active = parametros[parametros.get("ativo", 1).fillna(1).astype(int).eq(1)].copy() if "ativo" in parametros else parametros.copy()
     if "cliente_norm" in active.columns:
         matched = active[active["cliente_norm"].fillna("").astype(str).eq(cliente)]
