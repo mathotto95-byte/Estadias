@@ -752,8 +752,8 @@ def render_imports_page(usuario: str, role: str) -> None:
         st.caption("Importe o CSV, revise/trate os registros e aplique somente após a conferência.")
         st.session_state.setdefault("ots_otd_manual_upload_version", 0)
         ots_file = st.file_uploader(
-            "CSV do OTS/OTD",
-            type=["csv"],
+            "Arquivo OTS/OTD",
+            type=["xlsx", "xls", "csv"],
             key=f"ots_otd_manual_upload_{int(st.session_state['ots_otd_manual_upload_version'])}",
         )
         if ots_file is not None and st.button("Ler CSV do OTS/OTD", use_container_width=True):
