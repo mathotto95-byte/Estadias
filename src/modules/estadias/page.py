@@ -616,7 +616,7 @@ def render_imports_page(usuario: str, role: str) -> None:
             st.success(f"LCTE limpo. Registros removidos: {sum(deleted.values())}.")
             st.rerun()
         upload_key = f"estadias_lcte_upload_{int(st.session_state.get('estadias_lcte_upload_version', 0))}"
-        lcte_file = st.file_uploader("Arquivo LCTE Ipiranga", type=["csv"], key=upload_key)
+        lcte_file = st.file_uploader("Arquivo LCTE Ipiranga", type=["xlsx", "xls"], key=upload_key)
         lcte_mode = _duplicate_mode(role, "estadias_lcte_duplicate_mode")
         if st.button("Importar LCTE Ipiranga", type="primary", use_container_width=True, disabled=lcte_file is None):
             with st.spinner("Importando LCTE Ipiranga..."):
