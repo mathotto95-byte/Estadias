@@ -64,6 +64,10 @@ def _registro_local(row):
     return value.tz_convert("America/Sao_Paulo").tz_localize(None) if pd.notna(value) and value.tzinfo else value
 
 
+def _monitoring_code(value):
+    return _text(value).removesuffix(".0").strip()
+
+
 def receive():
     from estadias_app.github_backup import github_settings
 
@@ -100,7 +104,7 @@ def enrich_summary(summary, payload):
     rows = payload["rows"]
     schedules = {}
     for row in rows:
-        code = _text(row.get("codigo_monitoramento"))
+        code = _monitoring_code(row.get("codigo_monitoramento"))
         if re.fullmatch(r"\d{7}", code):
             schedules.setdefault(code, []).append(row)
     schedules = {code: max(group, key=lambda row: (_registro_local(row), int(row.get("id") or 0)))
@@ -110,9 +114,9 @@ def enrich_summary(summary, payload):
         plate = re.sub(r"[^A-Z0-9]", "", _text(row.get("Placa")).upper())
         for nf in re.split(r"[;,/|\s]+", _text(row.get("Notas"))):
             if nf:
-                identities.setdefault((nf.removesuffix(".0").lstrip("0") or "0", plate), set()).add((_text(row.get("monitoramento")), _text(row.get("lcte_id"))))
+            identities.setdefault((nf.removesuffix(".0").lstrip("0") or "0", plate), set()).add((_monitoring_code(row.get("monitoramento")), _text(row.get("lcte_id"))))
     for index, row in result.iterrows():
-        code = _text(row.get("monitoramento"))
+        code = _monitoring_code(row.get("monitoramento"))
         plate = re.sub(r"[^A-Z0-9]", "", _text(row.get("Placa")).upper())
         notes = [nf.removesuffix(".0").lstrip("0") or "0" for nf in re.split(r"[;,/|\s]+", _text(row.get("Notas"))) if nf]
         reason = ""
