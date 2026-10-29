@@ -2293,21 +2293,14 @@ def render_cross_page(usuario: str) -> None:
     else:
         cross = read_cross(200000)
 
-    if not st.session_state.get("ots_otd_load_attempted"):
-        st.session_state["ots_otd_load_attempted"] = True
-        try:
-            st.session_state["ots_otd_result"] = ots_otd.receive()
-        except ValueError as exc:
-            st.session_state["ots_otd_load_error"] = str(exc)
-    if st.button("Atualizar OTS/OTD", key="cross_update_ots_otd"):
-        try:
-            st.session_state["ots_otd_result"] = ots_otd.receive()
-            st.session_state.pop("ots_otd_load_error", None)
-        except ValueError as exc:
-            st.error(str(exc))
+    if st.button("Usar importação OTS/OTD", key="cross_update_ots_otd"):
+        if st.session_state.get("ots_otd_result"):
+            st.success("Dados OTS/OTD importados aplicados às viagens.")
+        else:
+            st.warning("Importe e aplique uma planilha OTS/OTD antes de consultar as viagens.")
     ots_payload = st.session_state.get("ots_otd_result")
     if ots_payload:
-        st.caption(f"OTS/OTD: backup de {ots_payload.get('generated_at', 'data não informada')}")
+        st.caption(f"OTS/OTD: dados da importação ({ots_payload.get('generated_at', 'data não informada')})")
     else:
         st.warning(st.session_state.get("ots_otd_load_error", "OTS/OTD não carregado. Clique em Atualizar OTS/OTD."))
     summary = _build_trip_summary_table(_apply_conference(ots_otd.enrich_summary(_build_cross_summary_table(cross), ots_payload)))
