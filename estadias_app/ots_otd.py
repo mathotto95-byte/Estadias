@@ -114,7 +114,7 @@ def enrich_summary(summary, payload):
         plate = re.sub(r"[^A-Z0-9]", "", _text(row.get("Placa")).upper())
         for nf in re.split(r"[;,/|\s]+", _text(row.get("Notas"))):
             if nf:
-            identities.setdefault((nf.removesuffix(".0").lstrip("0") or "0", plate), set()).add((_monitoring_code(row.get("monitoramento")), _text(row.get("lcte_id"))))
+                identities.setdefault((nf.removesuffix(".0").lstrip("0") or "0", plate), set()).add((_monitoring_code(row.get("monitoramento")), _text(row.get("lcte_id"))))
     for index, row in result.iterrows():
         code = _monitoring_code(row.get("monitoramento"))
         plate = re.sub(r"[^A-Z0-9]", "", _text(row.get("Placa")).upper())
