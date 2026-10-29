@@ -23,6 +23,7 @@ IMPORT_COLUMNS = {
     "Código de Monitoramento": "codigo_monitoramento",
     "Data Hora Registro": "data_hora_registro",
     "Data/Hora Registro": "data_hora_registro",
+    "Data/Hora do Registro": "data_hora_registro",
     "Justificativa Selecao": "justificativa_selecao",
     "Justificativa Seleção": "justificativa_selecao",
 }
@@ -40,15 +41,16 @@ def _validate_import_frame(frame: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     missing = sorted(REQUIRED - set(frame.columns))
     if missing:
         raise ValueError("Colunas obrigatórias ausentes: " + ", ".join(missing))
-    frame = frame.where(pd.notna(frame), "")
+    frame = frame.dropna(how="all").where(pd.notna(frame), "")
     frame["id"] = pd.to_numeric(frame["id"], errors="coerce")
-    if frame["id"].isna().any() or frame["id"].duplicated().any():
+    next_id = int(frame["id"].max()) + 1 if frame["id"].notna().any() else 1
+    for index in frame.index[frame["id"].isna()]:
+        frame.at[index, "id"] = next_id
+        next_id += 1
+    if frame["id"].duplicated().any():
         raise ValueError("A coluna ID precisa conter valores numéricos únicos.")
     frame["id"] = frame["id"].astype(int)
     frame["codigo_monitoramento"] = frame["codigo_monitoramento"].astype(str).str.strip().str.upper()
-    invalid_codes = ~frame["codigo_monitoramento"].str.fullmatch(r"\d{7}")
-    if invalid_codes.any():
-        raise ValueError(f"Há {int(invalid_codes.sum())} código(s) de monitoramento diferente(s) de 7 dígitos.")
     rows = frame.to_dict("records")
     return {"schema": "ots_otd_backup_v1", "records": len(rows), "rows": rows, "generated_at": "Importação manual"}, frame
 
