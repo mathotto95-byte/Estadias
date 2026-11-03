@@ -427,6 +427,68 @@ def _tracker_positions_pdf(
     return output.getvalue()
 
 
+def _tracker_positions_html(spec: dict[str, object]) -> str:
+    import json
+    from html import escape
+
+    safe = lambda value, default="-": escape(str(value if value not in [None, ""] else default))
+    positions = read_estadia_positions_period(
+        int(spec.get("lcte_id") or 0),
+        str(spec.get("tipo") or ""),
+        str(spec.get("placa") or ""),
+        str(spec.get("chegada") or ""),
+        str(spec.get("saida") or ""),
+        1000,
+    )
+    if positions.empty:
+        positions = read_rastreador_period(str(spec.get("placa") or ""), str(spec.get("chegada") or ""), str(spec.get("saida") or ""), 2500)
+    display = positions.head(250) if "fonte" in positions and positions["fonte"].eq("RASTREADOR_RESUMIDO_30_MIN").all() else _sample_positions_for_result(positions, 250)
+    point_rows = [
+        [
+            str(point.get("placa_norm") or spec.get("placa") or "")[:12],
+            _format_export_datetime(point.get("data_hora")),
+            str(point.get("cidade") or "")[:42],
+            _format_speed(point.get("velocidade") or point.get("velocidade_rastreador")),
+        ]
+        for _, point in display.iterrows()
+    ]
+    rows = "".join(
+        "<tr>" + "".join(
+            f"<td>{safe(value)}</td>" for value in values
+        ) + "</tr>"
+        for values in point_rows
+    )
+    note = f"<p class=note>Posições resumidas em intervalos de 30 minutos. Exibidas {len(display)} de {len(positions)} posições deste período.</p>" if len(positions) > len(display) else ""
+    table = (
+        "<table><thead><tr><th>Placa</th><th>Data e hora (intervalo 30 min)</th>"
+        "<th>Município</th><th>Velocidade</th></tr></thead><tbody>"
+        + (rows or '<tr><td colspan="4">Nenhuma posição do rastreador encontrada para este período.</td></tr>')
+        + "</tbody></table>"
+    )
+    return f'''<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório de Posições Rastreador</title>
+<style>
+@page {{ size: A4; margin: 12mm 8mm; }} body {{ font: 12px Arial,sans-serif; color:#020d3f; margin:0; }}
+header {{ background:#020d3f; border:1px solid #c49a12; color:#c49a12; text-align:center; padding:12px; font-size:18px; font-weight:bold; }}
+h2 {{ font-size:16px; margin:18px 0 8px; }} p {{ margin:5px 0; }} table {{ border-collapse:collapse; width:100%; margin-top:14px; }}
+th {{ background:#020d3f; color:#c49a12; }} th,td {{ border:1px solid #b7b7b7; padding:5px; text-align:left; font-size:10px; }}
+.note {{ font-style:italic; margin-top:8px; }} tr {{ page-break-inside:avoid; }}
+</style></head><body><header>Relatório de Posições Rastreador</header>
+<h2>Estadia: {safe(spec.get("tipo"))} | Placa: {safe(spec.get("placa"))} | Nota Fiscal: {safe(spec.get("nf"))}</h2>
+<p>Local: {safe(spec.get("local"))}</p><p>Origem/Destino viagem: {safe(spec.get("origem"))} &gt; {safe(spec.get("destino"))}</p>
+<label>Filtrar placa: <input id="placaFiltro" placeholder="Digite a placa"></label>
+<label> Importar CSV PgAdmin: <input id="csv" type="file" accept=".csv,text/csv"></label>
+<div id="resultado">{table}</div>{note}
+<script>
+const cabecalho=['Placa','Data e hora (intervalo 30 min)','Município','Velocidade'];
+let dados={json.dumps(point_rows, ensure_ascii=False)};
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+function render(){{const filtro=document.getElementById('placaFiltro').value.trim().toUpperCase();const linhas=dados.filter(r=>!filtro||String(r[0]).toUpperCase().includes(filtro));document.getElementById('resultado').innerHTML='<table><thead><tr>'+cabecalho.map(esc=>'<th>'+esc+'</th>').join('')+'</tr></thead><tbody>'+(linhas.length?linhas.map(r=>'<tr>'+r.map(esc=>'<td>'+esc+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="4">Nenhuma posição encontrada.</td></tr>')+'</tbody></table>';}}
+document.getElementById('placaFiltro').addEventListener('input',render);
+document.getElementById('csv').addEventListener('change',e=>{{const file=e.target.files[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{{const lines=String(reader.result).split(/\\r?\\n/).filter(Boolean);const sep=lines[0].includes(';')?';':',';const parse=line=>line.split(sep).map(v=>v.trim().replace(/^"|"$/g,''));const h=parse(lines.shift()).map(v=>v.toLowerCase());const idx=n=>h.findIndex(v=>v.includes(n));dados=lines.map(parse).map(r=>[r[idx('placa')]||'',r[idx('data_hora')]||r[idx('data e hora')]||'',r[idx('cidade')]||r[idx('municipio')]||'',r[idx('velocidade')]||'']).filter(r=>r[0]||r[1]);render();}};reader.readAsText(file,'UTF-8');}});
+</script></body></html>'''
+
+
 def _tracker_positions_pdf_zip(specs: list[dict[str, object]], selected_indexes: list[int]) -> bytes:
     output = BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -2364,9 +2426,12 @@ def render_cross_page(usuario: str) -> None:
     if "Monitoramento" in filtered.columns and "Monitoramento" not in table_columns:
         table_columns = _insert_column_after(table_columns, "Monitoramento", "Notas", list(filtered.columns))
     table = filtered[[column for column in table_columns if column in filtered.columns]].copy()
+    complete_table = filtered.copy()
     for column in (*DATE_DISPLAY_COLUMNS, "Previsão de Carga", "Agendamento de Carga", "Data Limite", "Agenda GFL", "Data Emissao NF", "Enviada em", "Respondida em", "Prazo resposta", "Chegada Rastreador Carga", "Saida Rastreador Carga", "Chegada Rastreador Descarga", "Saida Rastreador Descarga"):
         if column in table.columns:
             table[column] = table[column].map(_format_datetime_display)
+        if column in complete_table.columns:
+            complete_table[column] = complete_table[column].map(_format_datetime_display)
     col_b.download_button(
         "Exportar viagens Excel",
         dataframe_to_excel({"viagens_com_regras": table}),
@@ -2384,6 +2449,14 @@ def render_cross_page(usuario: str) -> None:
         disabled=filtered.empty,
     )
     col_d.button("Limpar filtros", use_container_width=True, on_click=_clear_cross_summary_filters)
+    st.download_button(
+        "Baixar análise completa Excel",
+        dataframe_to_excel({"analise_completa": complete_table}),
+        "estadias_analise_completa.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        disabled=complete_table.empty,
+    )
 
     filtered_ids = set(pd.to_numeric(filtered.get("lcte_id", pd.Series(dtype=int)), errors="coerce").dropna().astype(int).tolist()) if not filtered.empty else set()
     pdf_base = cross[pd.to_numeric(cross.get("lcte_id", pd.Series(dtype=int)), errors="coerce").fillna(0).astype(int).isin(filtered_ids)].copy() if filtered_ids and "lcte_id" in cross.columns else pd.DataFrame()
@@ -2445,6 +2518,15 @@ def render_cross_page(usuario: str) -> None:
                             use_container_width=True,
                             key="estadias_pdf_download_preparado",
                         )
+                        if len(pdf_selected) == 1:
+                            col_download.download_button(
+                                "Baixar HTML",
+                                _tracker_positions_html(pdf_specs[pdf_selected[0]]),
+                                "relatorio_posicoes_rastreador.html",
+                                "text/html",
+                                use_container_width=True,
+                                key="estadias_html_download_preparado",
+                            )
             else:
                 col_download.button("Baixar arquivo", use_container_width=True, disabled=True)
     else:
