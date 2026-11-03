@@ -20,7 +20,6 @@ from src.modules.estadias.repository import (
     LCTE_NORMALIZED_TABLE,
     RASTREADOR_NORMALIZED_TABLE,
     clear_estadias_imported_database,
-    clear_estadias_rastreador_database,
     arquivos_rastreador_importados,
     clear_lcte_base,
     latest_logs,
@@ -733,9 +732,9 @@ def render_imports_page(usuario: str, role: str) -> None:
         )
         tracker_mode = _duplicate_mode(role, "estadias_rastreador_duplicate_mode")
         process_and_clean = st.checkbox(
-            "Calcular imediatamente apos importar e limpar rastreador bruto",
+            "Calcular imediatamente apos importar",
             value=False,
-            help="Mantem no banco apenas o resultado do cruzamento e as posicoes resumidas das estadias para PDF. As posicoes importadas do rastreador sao removidas ao final.",
+            help="Calcula as estadias logo após a importação. As posições brutas do rastreador são mantidas para novas análises.",
         )
         col_xls, col_pgadmin = st.columns(2)
         import_standard = col_xls.button("Importar relatorios do rastreador", type="primary", use_container_width=True, disabled=not tracker_files)
@@ -773,14 +772,10 @@ def render_imports_page(usuario: str, role: str) -> None:
                 status_text.info("Enviando backup de resultados para o GitHub...")
                 backup_result = backup_to_github("resultado_pos_calculo")
                 result["backup_github"] = backup_result
-                if backup_result.get("status") in {"SUCESSO", "SEM_ALTERACAO"}:
-                    progress.progress(95)
-                    status_text.info("Limpando posicoes brutas do rastreador para liberar banco...")
-                    result["limpeza_rastreador"] = clear_estadias_rastreador_database()
-                else:
+                if backup_result.get("status") not in {"SUCESSO", "SEM_ALTERACAO"}:
                     status_text.warning("Backup nao confirmado. Posicoes brutas mantidas para novo recalculo.")
                 progress.progress(100)
-                status_text.success("Importacao, calculo, backup e limpeza concluidos.")
+                status_text.success("Importacao, calculo e backup concluidos. Posicoes brutas mantidas.")
             else:
                 progress.progress(100)
                 status_text.success("Importacao concluida. Abra Estadias para recalcular.")
@@ -804,10 +799,6 @@ def render_imports_page(usuario: str, role: str) -> None:
                     st.success(f"Backup GitHub enviado: {backup.get('records', 0)} registro(s).")
                 else:
                     st.warning(f"Backup GitHub nao concluido: {backup.get('message') or backup.get('status')}")
-            if last_tracker_result.get("limpeza_rastreador"):
-                cleanup = last_tracker_result.get("limpeza_rastreador") or {}
-                st.success(f"Rastreador bruto limpo: {cleanup.get('total_deleted', 0)} registro(s) removidos.")
-                st.caption("Para recalcular com novas regras, reimporte o CSV na tela de Estadias.")
             render_dataframe(last_tracker_result.get("resultado"), height=360, max_rows=200)
 
     with st.expander("Importar OTS e OTD", expanded=True):
@@ -2340,11 +2331,7 @@ def render_cross_page(usuario: str) -> None:
             )
             backup = backup_to_github("recalculo_csv" if csv_files else "recalculo_regras")
             if backup.get("status") in {"SUCESSO", "SEM_ALTERACAO"}:
-                if selected_plate:
-                    st.info("Backup confirmado. Posicoes mantidas porque o calculo foi limitado a uma placa.")
-                else:
-                    clear_estadias_rastreador_database()
-                    st.success("Backup confirmado. Posicoes brutas removidas.")
+                st.info("Backup confirmado. Posicoes brutas mantidas para novas analises.")
                 st.session_state["skip_next_auto_backup"] = True
             else:
                 st.warning(f"Backup nao confirmado: {backup.get('message') or backup.get('status')}. Posicoes mantidas para nova tentativa.")
